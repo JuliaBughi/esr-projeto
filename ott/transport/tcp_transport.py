@@ -1,4 +1,3 @@
-# oot/transport/tcp_transport.py
 import socket
 import threading
 
@@ -12,54 +11,42 @@ class TCPTransport:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     def start_listening(self):
-        """Inicia a thread do LADO SERVIDOR para aceitar novas conexões."""
+        """Inicia servidor TCP em thread separada"""
         self.server_socket.bind((self.my_ip, self.my_port))
         self.server_socket.listen(10)
-        print(f"[Transport] A escutar em {self.my_ip}:{self.my_port}")
-        
-        listen_thread = threading.Thread(target=self._accept_connections, daemon=True)
-        listen_thread.start()
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+        print(f"[TCP] Escutando em {self.my_ip}:{self.my_port}")
 
-    def _accept_connections(self):
+    def _accept_loop(self):
         while True:
             client_socket, addr = self.server_socket.accept()
-            # Quando uma conexão é aceite, o callback é chamado para que a camada de overlay a possa gerir
-            self.on_message_callback(client_socket, None, "NEW_CONNECTION")
+            threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True).start() 
 
-    def connect_and_listen(self, peer_ip, peer_port):
-        """Função do LADO CLIENTE: Conecta-se a um peer e retorna o socket."""
+    def _handle_client(self, sock):
+        """Recebe mensagens e chama callback"""
+        while True:
+            try:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                self.on_message_callback(sock, data)
+            except ConnectionResetError:
+                break
+
+    def connect(self, peer_ip, peer_port):
+        """Conecta a outro nó e retorna socket"""
         try:
-            peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            peer_socket.connect((peer_ip, peer_port))
-            # Após conectar, o callback é chamado para a camada de overlay gerir a nova conexão
-            self.on_message_callback(peer_socket, None, "NEW_CONNECTION")
-            return peer_socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((peer_ip, peer_port))
+            threading.Thread(target=self._handle_client, args=(sock,), daemon=True).start()
+            return sock
         except Exception as e:
-            print(f"[Transport] Falha ao conectar a {peer_ip}:{peer_port}. Erro: {e}")
+            print(f"[TCP] Falha ao conectar {peer_ip}:{peer_port}: {e}")
             return None
 
     @staticmethod
-    def send(peer_socket, message_bytes):
+    def send(sock, message_bytes):
         try:
-            peer_socket.sendall(message_bytes)
+            sock.sendall(message_bytes)
         except Exception as e:
-            print(f"[Transport] Erro ao enviar mensagem: {e}")
-
-    @staticmethod
-    def start_receiving_thread(peer_socket, callback):
-        """Inicia uma thread para receber mensagens de um socket específico."""
-        recv_thread = threading.Thread(target=TCPTransport._receive_messages, args=(peer_socket, callback), daemon=True)
-        recv_thread.start()
-
-    @staticmethod
-    def _receive_messages(peer_socket, callback):
-        while True:
-            try:
-                data = peer_socket.recv(4096)
-                if not data:
-                    callback(peer_socket, None, "CONNECTION_CLOSED")
-                    break
-                callback(peer_socket, data, "MESSAGE")
-            except ConnectionResetError:
-                callback(peer_socket, None, "CONNECTION_CLOSED")
-                break
+            print(f"[TCP] Erro ao enviar: {e}")

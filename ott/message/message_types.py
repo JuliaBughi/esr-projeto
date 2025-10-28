@@ -1,8 +1,55 @@
-# oot/message/message_types.py
+import json
+from typing import List, Dict
 
-# Para o processo de bootstrap
-JOIN_REQUEST = "JOIN_REQUEST"
-NEIGHBOR_LIST = "NEIGHBOR_LIST"
+# ----------------------------
+# Classe base
+# ----------------------------
+class Message:
+    TYPE = "BASE"
 
-# Para a comunicação entre nós
-HELLO = "HELLO"
+    def to_json(self) -> str:
+        """
+        Serializa a mensagem para JSON
+        """
+        data = {"type": self.TYPE}
+        for k, v in self.__dict__.items():
+            data[k] = v
+        return json.dumps(data)
+
+# ----------------------------
+# Mensagem JOIN (enviada pelo nó)
+# ----------------------------
+class JoinMessage(Message):
+    TYPE = "JOIN"
+
+    def __init__(self, node_id: str):
+        self.node_id = node_id
+
+# ----------------------------
+# Mensagem WELCOME (resposta do bootstrapper)
+# ----------------------------
+class WelcomeMessage(Message):
+    TYPE = "WELCOME"
+
+    def __init__(self, neighbors: List[Dict[str, str]]):
+        self.neighbors = neighbors
+
+# ----------------------------
+# Mensagem HELLOWORLD (tentativa de conexão com outros nós)
+# ----------------------------
+class HelloMessage(Message):
+    TYPE = "HELLO"
+
+    def __init__(self, node_id: str):
+        self.node_id = node_id
+        
+# ----------------------------
+# Mensagem HELLOBACK (aceitação de conexão com outro nó)
+# ----------------------------
+class HelloBackMessage(Message):
+    TYPE = "HELLOBACK"
+
+    def __init__(self, node_id: str):
+        self.node_id = node_id
+
+# JOIN, HELLO E HELLOBACK são iguais, vale a pena diferenciar? ver mais para frente se é preciso mais alguma coisa, se não dá para usar só hello

@@ -1,17 +1,21 @@
-# oot/message/parser.py
 import json
+from message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage
 
-def create_message(msg_type, payload={}):
-    """Cria uma mensagem formatada em JSON e codificada em bytes."""
-    message = {
-        "type": msg_type,
-        "payload": payload
-    }
-    return json.dumps(message).encode('utf-8')
+def parse_message(json_str: str) -> Message:
+    """
+    Desserializa JSON em uma instância de Message adequada
+    """
+    data = json.loads(json_str)
+    msg_type = data.get("type")
 
-def parse_message(data_bytes):
-    """Recebe bytes, descodifica e faz parse do JSON para um dicionário Python."""
-    try:
-        return json.loads(data_bytes.decode('utf-8'))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None # Retorna None se a mensagem for inválida
+    if msg_type == "JOIN":
+        return JoinMessage(node_id=data["node_id"])
+    elif msg_type == "WELCOME":
+        return WelcomeMessage(neighbors=data["neighbors"])
+    elif msg_type == "HELLO":
+        return HelloMessage(node_id=data["node_id"])
+    elif msg_type == "HELLOBACK":
+        return HelloBackMessage(node_id=data["node_id"])
+    else:
+        # Mensagem desconhecida
+        return Message()

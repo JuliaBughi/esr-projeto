@@ -1,70 +1,51 @@
-# bootstraper.py
+import json
 import socket
 import threading
-import json
-import random
+import argparse
+import os
+from ott.message.message_types import JoinMessage, WelcomeMessage, Message
 
-# Limite de vizinhos que o bootstrapper sugere a um novo nó.
-MAX_NEIGHBORS = 3
+def load_topology(config_number):
+    """Carrega o ficheiro JSON da topologia, ex: overlay2.json"""
+    filename = f"configs/overlay{config_number}.json"
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"Ficheiro {filename} não encontrado.")
+    with open(filename, "r") as f:
+        data = json.load(f)
+    return data["nodes"]
 
-class Bootstrapper:
-    def __init__(self, ip, port):
-        self.ip = ip
-        self.port = port
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.known_nodes = [] # Lista de tuplos (ip, port)
-        self.lock = threading.Lock()
-        print(f"Bootstrapper a escutar em {ip}:{port}")
+def handle_client(conn, nodes):
+    """Atende pedidos JOIN de novos nós"""
+    try:
+        data = conn.recv(1024).decode()
+        req_msg = Message.from_json(data)  
+        if isinstance(req_msg, JoinMessage):
+            node_id = req_msg.node_id
+            neighbors = [{"id": n, "host": nodes[n]["host"], "port": nodes[n]["port"]}
+                            for n in nodes[node_id]["neighbors"] if n in nodes]
+            resp_msg = WelcomeMessage(neighbors)
+            conn.send(resp_msg.to_json().encode())
+    except Exception as e:
+        print(f"[ERRO] {e}")
+    finally:
+        conn.close()
 
-    def start(self):
-        self.server_socket.bind((self.ip, self.port))
-        self.server_socket.listen(10)
-        while True:
-            client_socket, addr = self.server_socket.accept()
-            thread = threading.Thread(target=self._handle_client, args=(client_socket, addr))
-            thread.start()
+def start_bootstrapper(config_number, host="0.0.0.0", port=5000):
+    nodes = load_topology(config_number)
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind((host, port))
+    server_socket.listen()
+    print(f"[BOOTSTRAPPER] Online em {host}:{port} com {len(nodes)} nós carregados")
 
-    def _handle_client(self, client_socket, addr):
-        print(f"Nova conexão de {addr}")
-        try:
-            data = client_socket.recv(1024)
-            if not data:
-                return
-
-            message = json.loads(data.decode('utf-8'))
-            
-            if message.get("type") == "JOIN_REQUEST":
-                node_ip = message["payload"]["ip"]
-                node_port = message["payload"]["port"]
-                new_node_addr = (node_ip, node_port)
-                
-                with self.lock:
-                    # Seleciona vizinhos para enviar de volta, excluindo o próprio nó
-                    other_nodes = [node for node in self.known_nodes if node != new_node_addr]
-                    
-                    # Usa min() para não falhar se houver menos nós que MAX_NEIGHBORS
-                    num_to_send = min(len(other_nodes), MAX_NEIGHBORS)
-                    neighbors_to_send = random.sample(other_nodes, num_to_send)
-
-                    # Adiciona o novo nó à lista para futuros pedidos
-                    if new_node_addr not in self.known_nodes:
-                        self.known_nodes.append(new_node_addr)
-
-                response = {
-                    "type": "NEIGHBOR_LIST",
-                    "payload": neighbors_to_send
-                }
-                client_socket.sendall(json.dumps(response).encode('utf-8'))
-                print(f"Enviada lista de {len(neighbors_to_send)} vizinhos para {addr}.")
-                print(f"Nós conhecidos agora: {self.known_nodes}")
-
-        except Exception as e:
-            print(f"Erro ao lidar com o cliente {addr}: {e}")
-        finally:
-            client_socket.close()
+    while True:
+        conn, addr = server_socket.accept()
+        threading.Thread(target=handle_client, args=(conn, nodes)).start()
 
 if __name__ == "__main__":
-    # O bootstrapper corre num IP e porta conhecidos
-    bootstrapper = Bootstrapper('0.0.0.0', 8000)
-    bootstrapper.start()
+    parser = argparse.ArgumentParser(description="Bootstrapper externo OTT Overlay")
+    parser.add_argument("--config", type=int, required=True, help="Número do overlay JSON")
+    parser.add_argument("--host", default="0.0.0.0", help="IP do bootstrapper")
+    parser.add_argument("--port", type=int, default=5000, help="Porta do bootstrapper")
+    args = parser.parse_args()
+
+    start_bootstrapper(args.config, host=args.host, port=args.port)

@@ -1,7 +1,5 @@
-# ott/overlay/overlay.py
 import socket
 import threading
-# A linha seguinte foi corrigida de 'oot' para 'ott'
 from ott.message import message_types, parser
 
 class OverlayManager:
