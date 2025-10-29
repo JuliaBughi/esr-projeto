@@ -85,10 +85,11 @@ class Node:
 # Main
 # ----------------------------
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Uso: python ott.py <IP do bootstrapper>")
+    if len(sys.argv) < 3:
+        print("Uso: python ott.py <IP do node> <IP do bootstrapper>")
         sys.exit(1)
 
-    bootstrap_ip = sys.argv[1]
-    node = Node("127.0.0.1", (bootstrap_ip, 5000))
+    print(len(sys.argv))
+    bootstrap_ip = sys.argv[2]
+    node = Node(sys.argv[1], (bootstrap_ip, 5000)) # trocar para ip do node
     node.start()

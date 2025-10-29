@@ -15,6 +15,7 @@ def load_topology(config_number):
         data = json.load(f)
     return data["nodes"]
 
+
 def handle_client(conn, nodes):
     """Atende pedidos JOIN de novos nós"""
     try:
@@ -22,8 +23,12 @@ def handle_client(conn, nodes):
         req_msg = parse_message(data)  
         if isinstance(req_msg, JoinMessage):
             node_id = req_msg.node_id
-            neighbors = [{"id": n, "host": nodes[n]["host"], "port": nodes[n]["port"]}
-                            for n in nodes[node_id]["neighbors"] if n in nodes]
+            node_ip, node_port = node_id.split(":") 
+            node_port = int(node_port)
+            node_key = next((n for n, info in nodes.items() if info["host"] == node_ip), None)  
+            neighbors = [{"id": n, "host": nodes[n]["host"], "port": node_port}                
+                            for n in nodes[node_key]["neighbors"] if n in nodes]
+            print(neighbors)
             resp_msg = WelcomeMessage(neighbors)
             conn.send(resp_msg.to_json().encode())
     except Exception as e:
