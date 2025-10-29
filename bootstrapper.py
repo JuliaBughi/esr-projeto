@@ -3,7 +3,8 @@ import socket
 import threading
 import argparse
 import os
-from ott.message.message_types import JoinMessage, WelcomeMessage, Message
+from ott.message.message_types import JoinMessage, WelcomeMessage
+from ott.message.parser import parse_message
 
 def load_topology(config_number):
     """Carrega o ficheiro JSON da topologia, ex: overlay2.json"""
@@ -18,7 +19,7 @@ def handle_client(conn, nodes):
     """Atende pedidos JOIN de novos nós"""
     try:
         data = conn.recv(1024).decode()
-        req_msg = Message.from_json(data)  
+        req_msg = parse_message(data)  
         if isinstance(req_msg, JoinMessage):
             node_id = req_msg.node_id
             neighbors = [{"id": n, "host": nodes[n]["host"], "port": nodes[n]["port"]}

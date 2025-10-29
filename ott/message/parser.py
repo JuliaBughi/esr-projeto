@@ -1,5 +1,5 @@
 import json
-from message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage
 
 def parse_message(json_str: str) -> Message:
     """
