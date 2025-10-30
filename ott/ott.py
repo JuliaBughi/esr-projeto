@@ -95,12 +95,12 @@ class Node:
             if isinstance(msg_obj, WelcomeMessage):
                 print(f"[Node] Recebi vizinhos: {msg_obj.neighbors}")
                 for n in msg_obj.neighbors:
+                    n_id = f"{n['host']}:{n['port']}"
                     peer_sock = self.transport.connect(n["host"], n["port"])
                     if peer_sock:
-                        # Envia HELLO para iniciar handshake 1:1
                         TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
-                        # Armazena vizinho e socket
-                        self.neighbors[n["id"]] = {"ip": n["host"], "port": n["port"], "socket": peer_sock}
+                        self.neighbors[n_id] = {"ip": n["host"], "port": n["port"], "socket": peer_sock}
+
 
             elif isinstance(msg_obj, HelloMessage):
                 sender_id = msg_obj.node_id
@@ -108,8 +108,8 @@ class Node:
 
                 # Se ainda não temos a conexão com esse nó, registramos
                 if sender_id not in self.neighbors:
-                    peer_ip, peer_port = sock.getpeername()  # pega IP e porta do socket
-                    self.neighbors[sender_id] = {"ip": peer_ip, "port": peer_port, "socket": sock}
+                    ip_part, port_part = sender_id.split(":")
+                    self.neighbors[sender_id] = {"ip": ip_part, "port": int(port_part), "socket": sock}
 
                 TCPTransport.send(sock, HelloBackMessage(self.node_id).to_json().encode())
 
