@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage
 
 def parse_message(json_str: str) -> Message:
     """
@@ -16,6 +16,8 @@ def parse_message(json_str: str) -> Message:
         return HelloMessage(node_id=data["node_id"])
     elif msg_type == "HELLOBACK":
         return HelloBackMessage(node_id=data["node_id"])
+    elif msg_type == "LEAVE":
+        return LeaveMessage(node_id=data["node_id"], neighbors=data["neighbors"])
     else:
         # Mensagem desconhecida
         return Message()

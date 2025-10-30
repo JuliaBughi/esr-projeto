@@ -53,3 +53,10 @@ class HelloBackMessage(Message):
         self.node_id = node_id
 
 # JOIN, HELLO E HELLOBACK são iguais, vale a pena diferenciar? ver mais para frente se é preciso mais alguma coisa, se não dá para usar só hello
+
+class LeaveMessage(Message):
+    TYPE = "LEAVE"
+
+    def __init__(self, node_id: str, neighbors:List[Dict[str, str]]):
+        self.node_id = node_id
+        self.neighbors = neighbors
