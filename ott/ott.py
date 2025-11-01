@@ -1,10 +1,11 @@
 import sys, os
 import time
 from transport.tcp_transport import TCPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, PingMessage, PongMessage
 from message.parser import parse_message
 
 MY_PORT = 5000
+
 
 class Node:
     def __init__(self, my_ip, bootstrapper_addr):
@@ -12,16 +13,25 @@ class Node:
         self.node_id = f"{my_ip}:{MY_PORT}"
         self.bootstrapper_addr = bootstrapper_addr
         self.transport = TCPTransport(my_ip, MY_PORT, self.handle_message)
-        self.neighbors = {}  # node_id -> {"ip": ip, "port": port, "socket": sock}
+        self.neighbors = {} # node_id -> {"ip": ip, "port": port, "socket": sock}
+        self.next_seq = 1  
 
     def start(self):
         self.transport.start_listening()
         time.sleep(0.5)
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
+
+        ping_interval = 5 # segundos
+        last_ping = time.monotonic()
+
         try:
             while True:
                 time.sleep(1)
+                now = time.monotonic()
+                if now - last_ping >= ping_interval:
+                    self.send_ping_to_all()
+                    last_ping = now
         except KeyboardInterrupt:
             self.graceful_leave()
 
@@ -143,11 +153,48 @@ class Node:
                             TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
                             print(f"[Node] Conectei-me a novo vizinho {n_id}")
 
+            elif isinstance(msg_obj, PingMessage):
+                sender_id = msg_obj.node_id
+                seq = msg_obj.seq
+                print(f"[Node] Recebi PING de {sender_id}")
+
+                ip_part, port_part = sender_id.split(":")
+                self.neighbors[sender_id] = {"ip": ip_part, "port": int(port_part), "socket": sock}
+
+                TCPTransport.send(sock, PongMessage(self.node_id,seq).to_json().encode())
+                print(f"[Node] Enviei PONG para {sender_id}")
+
+            elif isinstance(msg_obj, PongMessage):
+                sender_id = msg_obj.node_id
+                seq = msg_obj.seq
+                print(f"[Node] Recebi PONG de {sender_id}")
+            
+
             else:
                 print(f"[Node] Recebi mensagem desconhecida: {msg_obj}")
 
         except Exception as e:
             print(f"[Node] Erro ao processar mensagem: {e}")
+    
+    def send_ping_to_all(self):
+
+        for neighbor_id, n_info in self.neighbors.items():
+            node_ip = n_info["ip"]
+            node_port = n_info["port"]
+            print(f"[MONITOR] Vou enviar PING para {node_ip}:{node_port}")
+
+            neighbor_list = [
+                {"id": nid, "ip": info["ip"], "port": info["port"]}
+                for nid, info in self.neighbors.items()
+                if nid != neighbor_id
+            ]
+
+            try:
+                self.next_seq += 1 
+                TCPTransport.send( n_info["socket"], PingMessage(self.node_id, self.next_seq).to_json().encode())
+                print(f"[MONITOR] Enviei PING para {neighbor_id}")
+            except Exception as e:
+                print(f"[MONITOR] Falha ao enviar PING para {neighbor_id}: {e}")
 
 # ----------------------------
 # Main
@@ -157,7 +204,6 @@ if __name__ == "__main__":
         print("Uso: python ott.py <IP do node> <IP do bootstrapper>")
         sys.exit(1)
 
-    print(len(sys.argv))
     bootstrap_ip = sys.argv[2]
     node = Node(sys.argv[1], (bootstrap_ip, 5000)) # trocar para ip do node
-    node.start()
+    node.start() 

@@ -1,5 +1,7 @@
 import json
+import time
 from typing import List, Dict
+
 
 # ----------------------------
 # Classe base
@@ -60,3 +62,20 @@ class LeaveMessage(Message):
     def __init__(self, node_id: str, neighbors:List[Dict[str, str]]):
         self.node_id = node_id
         self.neighbors = neighbors
+
+class PingMessage(Message):
+    TYPE="PING"
+
+    def __init__(self, node_id: str, seq: int, timestamp: float = None):
+        self.node_id = node_id  
+        self.seq = seq       # identificador de mensangens correspondentes, mas como estamos a usar tcp este seq nao é importante mas em udp pode dar jeito
+    
+
+class PongMessage(Message):
+    TYPE = "PONG"
+
+    def __init__(self, node_id: str, seq: int):
+        self.node_id = node_id
+        self.seq = seq
+
+    

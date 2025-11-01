@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, PingMessage, PongMessage
 
 def parse_message(json_str: str) -> Message:
     """
@@ -7,6 +7,8 @@ def parse_message(json_str: str) -> Message:
     """
     data = json.loads(json_str)
     msg_type = data.get("type")
+    seq = data.get("seq")
+    timestamp= data.get("timestamp")
 
     if msg_type == "JOIN":
         return JoinMessage(node_id=data["node_id"])
@@ -18,6 +20,10 @@ def parse_message(json_str: str) -> Message:
         return HelloBackMessage(node_id=data["node_id"])
     elif msg_type == "LEAVE":
         return LeaveMessage(node_id=data["node_id"], neighbors=data["neighbors"])
+    elif msg_type == "PING":
+        return PingMessage(node_id=data["node_id"], seq=seq)
+    elif msg_type == "PONG":
+        return PongMessage(node_id=data["node_id"], seq=seq)
     else:
         # Mensagem desconhecida
         return Message()
