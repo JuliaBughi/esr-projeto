@@ -181,7 +181,7 @@ class Node:
         for neighbor_id, n_info in self.neighbors.items():
             node_ip = n_info["ip"]
             node_port = n_info["port"]
-            print(f"[MONITOR] Vou enviar PING para {node_ip}:{node_port}")
+            print(f"[NODE] Vou enviar PING para {node_ip}:{node_port}")
 
             neighbor_list = [
                 {"id": nid, "ip": info["ip"], "port": info["port"]}
@@ -192,9 +192,9 @@ class Node:
             try:
                 self.next_seq += 1 
                 TCPTransport.send( n_info["socket"], PingMessage(self.node_id, self.next_seq).to_json().encode())
-                print(f"[MONITOR] Enviei PING para {neighbor_id}")
+                print(f"[NODE] Enviei PING para {neighbor_id}")
             except Exception as e:
-                print(f"[MONITOR] Falha ao enviar PING para {neighbor_id}: {e}")
+                print(f"[NODE] Falha ao enviar PING para {neighbor_id}: {e}")
 
 # ----------------------------
 # Main
