@@ -70,7 +70,6 @@ class PingMessage(Message):
         self.node_id = node_id  
         self.seq = seq       # identificador de mensangens correspondentes, mas como estamos a usar tcp este seq nao é importante mas em udp pode dar jeito
     
-
 class PongMessage(Message):
     TYPE = "PONG"
 
@@ -78,4 +77,13 @@ class PongMessage(Message):
         self.node_id = node_id
         self.seq = seq
 
+class FloodMessage(Message):
+    TYPE = "FLOOD"
+
+    def __init__(self, node_id : str, jump: int, flood_id : int, neighbors:List[Dict[str, str]], server_ip: str):
+        self.node_id = node_id
+        self.jump = jump
+        self.flood_id = flood_id
+        self.neighbors = neighbors
+        self.server_ip = server_ip
     

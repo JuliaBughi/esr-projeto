@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, PingMessage, PongMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage
 
 def parse_message(json_str: str) -> Message:
     """
@@ -7,8 +7,6 @@ def parse_message(json_str: str) -> Message:
     """
     data = json.loads(json_str)
     msg_type = data.get("type")
-    seq = data.get("seq")
-    timestamp= data.get("timestamp")
 
     if msg_type == "JOIN":
         return JoinMessage(node_id=data["node_id"])
@@ -21,9 +19,11 @@ def parse_message(json_str: str) -> Message:
     elif msg_type == "LEAVE":
         return LeaveMessage(node_id=data["node_id"], neighbors=data["neighbors"])
     elif msg_type == "PING":
-        return PingMessage(node_id=data["node_id"], seq=seq)
+        return PingMessage(node_id=data["node_id"], seq=data["seq"])
     elif msg_type == "PONG":
-        return PongMessage(node_id=data["node_id"], seq=seq)
+        return PongMessage(node_id=data["node_id"], seq=data["seq"])
+    elif msg_type == "FLOOD":
+        return FloodMessage(node_id=data["node_id"], jump=data["jump"], flood_id=data["flood_id"], neighbors=data["neighbors"], server_ip=data["server_ip"])
     else:
         # Mensagem desconhecida
         return Message()
