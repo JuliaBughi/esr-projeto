@@ -26,6 +26,7 @@ class Node:
         time.sleep(0.5)
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
+        time.sleep(1)
         self.initial_flood()
 
         try:
@@ -52,7 +53,6 @@ class Node:
         def ping_loop():
             while True:
                 time.sleep(interval)
-                print(f"[PING] Intervalo atingido ({interval}s) → enviando PINGs...")
                 for neighbor_id, info in list(self.neighbors.items()):
                     try:
                         self.next_seq += 1
@@ -121,14 +121,13 @@ class Node:
                 node_port = n_info["port"]
                 print(f"[NODE] Vou começar o flood em {node_ip}:{node_port}")
 
-                neighbor_list = [
-                    {"id": nid, "ip": info["ip"], "port": info["port"]}
-                    for nid, info in self.neighbors.items()
-                    if nid != neighbor_id
-                ]
+                own_neighbors = [{
+                    "host": self.node_id,
+                    "id": list(self.neighbors.keys())
+                }]
 
                 try:                              # se os vizinhos não estiverem conectados o flood nao acontece
-                    TCPTransport.send( n_info["socket"], FloodMessage(self.node_id, start_jump, self.flood_id, neighbor_list, self.node_id).to_json().encode()) 
+                    TCPTransport.send( n_info["socket"], FloodMessage(self.node_id, start_jump, self.flood_id, own_neighbors, self.node_id).to_json().encode()) 
                     print(f"[NODE] Enviei FLOOD para {neighbor_id}")                                                     
                 except Exception as e:
                     print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
@@ -207,19 +206,19 @@ class Node:
                 neighbor_list = msg_obj.neighbors
 
 
-                own_neighbors = [
-                    {"id": nid, "ip": info["ip"], "port": info["port"], "socket": None}
-                    for nid, info in self.neighbors.items()
-                ]
+                own_neighbors = [{
+                    "host": self.node_id,
+                    "id": list(self.neighbors.keys())
+                }]
 
                 neighbor_list.append(own_neighbors)
 
                 if flood_id in self.seen_floods:
-                    print(f"[Node] A ignorar FLOOD duplicado de {sender_id} e jump")
+                    print(f"[Node] A ignorar FLOOD duplicado de {sender_id}")
                     return
 
                 self.seen_floods.add(flood_id)
-                print(f"[Node] Recebi FLOOD de {sender_id}|{server_ip}|{flood_id}|{jump}|{msg_obj.neighbors}")
+                print(f"[Node] Recebi FLOOD de {sender_id} || {msg_obj.neighbors}")
 
                 ip_part, port_part = sender_id.split(":")
                 self.neighbors[sender_id] = {"ip": ip_part, "port": int(port_part), "socket": sock}
