@@ -23,7 +23,7 @@ def parse_message(json_str: str) -> Message:
     elif msg_type == "PONG":
         return PongMessage(node_id=data["node_id"], seq=data["seq"])
     elif msg_type == "FLOOD":
-        return FloodMessage(node_id=data["node_id"], jump=data["jump"], flood_id=data["flood_id"], neighbors=data["neighbors"], server_ip=data["server_ip"])
+        return FloodMessage(node_id=data["node_id"], jump=data["jump"], flood_id=data["flood_id"], neighbors=data["neighbors"], server_ip=data["server_ip"], route_status=data["route_status"])
     else:
         # Mensagem desconhecida
         return Message()

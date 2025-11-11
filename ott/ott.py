@@ -114,20 +114,23 @@ class Node:
 
     def initial_flood(self):
         if self.my_role == "server":
-            self.flood_id += 1
+            self.flood_id += 1 # flood id pode ser usado como o id do fluxo e no futuro podemos guardar a rota 
             start_jump = 0
+            route_status = False # inativa
+
             for neighbor_id, n_info in self.neighbors.items():
                 node_ip = n_info["ip"]
                 node_port = n_info["port"]
                 print(f"[NODE] Vou começar o flood em {node_ip}:{node_port}")
 
-                own_neighbors = [{
-                    "host": self.node_id,
-                    "id": list(self.neighbors.keys())
+                next_nodes = [{
+
+                    "dest": list(self.neighbors.keys())
+                
                 }]
 
                 try:                              # se os vizinhos não estiverem conectados o flood nao acontece
-                    TCPTransport.send( n_info["socket"], FloodMessage(self.node_id, start_jump, self.flood_id, own_neighbors, self.node_id).to_json().encode()) 
+                    TCPTransport.send( n_info["socket"], FloodMessage(self.node_id, start_jump, self.flood_id, next_nodes, self.node_id, route_status).to_json().encode()) 
                     print(f"[NODE] Enviei FLOOD para {neighbor_id}")                                                     
                 except Exception as e:
                     print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
@@ -203,22 +206,21 @@ class Node:
                 jump = msg_obj.jump
                 flood_id = msg_obj.flood_id
                 server_ip = msg_obj.server_ip
-                neighbor_list = msg_obj.neighbors
+                route_status = msg_obj.route_status
 
+                next_nodes = [{
 
-                own_neighbors = [{
-                    "host": self.node_id,
-                    "id": list(self.neighbors.keys())
+                    "dest": list(self.neighbors.keys())
+                
                 }]
 
-                neighbor_list.append(own_neighbors)
 
                 if flood_id in self.seen_floods:
                     print(f"[Node] A ignorar FLOOD duplicado de {sender_id}")
                     return
 
                 self.seen_floods.add(flood_id)
-                print(f"[Node] Recebi FLOOD de {sender_id} || {msg_obj.neighbors}")
+                print(f"[Node] Recebi FLOOD de {sender_id}")
 
                 ip_part, port_part = sender_id.split(":")
                 self.neighbors[sender_id] = {"ip": ip_part, "port": int(port_part), "socket": sock}
@@ -231,7 +233,7 @@ class Node:
                         sock = n_info["socket"]
                         TCPTransport.send(
                             sock,
-                            FloodMessage(self.node_id, jump + 1, flood_id, neighbor_list, server_ip).to_json().encode()
+                            FloodMessage(self.node_id, jump + 1, flood_id, next_nodes, server_ip, route_status).to_json().encode()
                         )
                         print(f"[Node] Reenviei FLOOD para {neighbor_id}")
                     except Exception as e:
