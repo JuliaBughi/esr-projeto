@@ -80,11 +80,8 @@ class PongMessage(Message):
 class FloodMessage(Message):
     TYPE = "FLOOD"
 
-    def __init__(self, node_id : str, jump: int, flood_id : int, neighbors:List[Dict[str, str]], server_ip: str, route_status: bool):
-        self.node_id = node_id
-        self.jump = jump
-        self.flood_id = flood_id
-        self.neighbors = neighbors
-        self.server_ip = server_ip
-        self.route_status = route_status
+    def __init__(self, origin: str, sender: str, jumps: int):
+        self.origin = origin   # servidor / origem do flood
+        self.sender = sender   # nó que enviou a mensagem
+        self.jumps = jumps     # número de saltos até aqui
     
