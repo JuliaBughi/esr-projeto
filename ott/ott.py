@@ -19,7 +19,7 @@ class Node:
         self.neighbors = {} # node_id -> {"ip": ip, "port": port, "socket": sock}
         self.next_seq = 1 
         self.seen_floods = set()
-        self.routing_table = []
+        self.routing_table = [] # Dicionário, chave: origin, valor: {info da melhor rota}
 
     def start(self):
         self.transport.start_listening()
@@ -132,7 +132,19 @@ class Node:
             except Exception as e:
                 print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
 
- 
+    
+    def get_best_route(self, origin_id):
+        
+        # Filtra a lista para obter apenas as rotas para a origem desejada.
+        candidate_routes = [route for route in self.routing_table if route["origin"] == origin_id]
+
+        if not candidate_routes:
+            return None
+
+        # Encontra a rota com a menor métrica (custo) na lista de candidatos.
+        best_route = min(candidate_routes, key=lambda r: r["metric"])
+        
+        return best_route
 
     def handle_message(self, sock, data):
         """Callback para mensagens recebidas"""
@@ -203,37 +215,43 @@ class Node:
                 origin = msg_obj.origin
                 sender = msg_obj.sender
                 jumps = msg_obj.jumps
-               
-                # evita loop: cada (origin, sender) processado apenas uma vez
+
+                new_cost = jumps + 1
+
+                # Prevenção de loops exatos: não processar o mesmo anúncio
+                # da mesma origem vindo do mesmo vizinho.
                 loop_key = (origin, sender)
                 if loop_key in self.seen_floods:
                     return
                 self.seen_floods.add(loop_key)
 
-                # adiciona linha na tabela de routing
+                # Adiciona a nova rota descoberta à lista
                 route_entry = {
                     "origin": origin,
                     "antecessor": sender,
-                    "sucessores": [nid for nid in self.neighbors.keys() if nid != sender],
-                    "metric": jumps,
-                    "state": "active",
+                    "metric": new_cost,
+                    "state": "INACTIVE",
                     "timestamp": time.time()
                 }
                 self.routing_table.append(route_entry)
-                print(f"[ROUTING] Atualizei tabela: {route_entry}")
+                print(f"[ROUTING] Nova rota aprendida para {origin} via {sender} com custo {new_cost}.")
+                print(f"-> Tabela de Rotas Atual: {self.routing_table}")
 
-                # reenvia flood para vizinhos (exceto quem enviou)
+                best_route_now = self.get_best_route(origin)
+                if best_route_now:
+                    print(f"====> MELHOR ROTA ATUAL para {origin}: via {best_route_now['antecessor']} (custo {best_route_now['metric']})")
+
                 for neighbor_id, n_info in self.neighbors.items():
                     if neighbor_id == sender:
                         continue
                     try:
                         TCPTransport.send(
                             n_info["socket"],
-                            FloodMessage(origin=origin, sender=self.node_id, jumps=jumps+1).to_json().encode()
+                            FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost).to_json().encode()
                         )
-                        print(f"[NODE] Reenviei FLOOD para {neighbor_id}")
                     except Exception as e:
                         print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
+
 
 
             elif isinstance(msg_obj, PingMessage):
