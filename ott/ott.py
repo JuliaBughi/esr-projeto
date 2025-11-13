@@ -143,7 +143,7 @@ class Node:
             try:
                 TCPTransport.send(
                     n_info["socket"],
-                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, flow_id=flow_id, metric=start_jump).to_json().encode()
+                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, flow_id=flow_id, metric=start_jump).to_json().encode() + b"\n"
                 )
                 print(f"[NODE] Enviei FLOOD para {neighbor_id} (flow={flow_id})")
             except Exception as e:
@@ -218,9 +218,9 @@ class Node:
                 if sender_id in self.neighbors:
                     self.neighbors[sender_id]["established"] = True
 
-                if not getattr(self, "monitor_thread_started", False):
-                    self.monitor_thread_started = True
-                    self.monitor_thread(interval=120)
+                # if not getattr(self, "monitor_thread_started", False):
+                #     self.monitor_thread_started = True
+                #     self.monitor_thread(interval=120)
 
 
             elif isinstance(msg_obj, LeaveMessage):
@@ -380,7 +380,7 @@ class Node:
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Over the top application")
-    parser.add_argument("--role", type=str, choices = ["server", "client", "middle"], default="middle", help="Server ou Client")
+    parser.add_argument("--role", type=str, choices = ["server", "client", "middle"], default="middle", help="Server, Client ou middle")
     parser.add_argument("--host", default="0.0.0.0", help="IP do node Host")
     parser.add_argument("--bootstrap", default="0.0.0.0", help="IP do Bootstrapper")
     args = parser.parse_args()
