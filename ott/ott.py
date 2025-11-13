@@ -18,6 +18,7 @@ class Node:
         self.transport = TCPTransport(my_ip, MY_PORT, self.handle_message)
         self.neighbors = {} # node_id -> {"ip": ip, "port": port, "socket": sock}
         self.next_seq = 1 
+        self.flow_id = 1
         self.seen_floods = set()
         self.routing_table = [] # Dicionário, chave: origin, valor: {info da melhor rota}
 
@@ -115,17 +116,13 @@ class Node:
             
 
     def flood(self):
-        if self.my_role != "server":
-            return
-
         start_jump = 0
-        route_status = False # inativa
 
         for neighbor_id, n_info in self.neighbors.items():
             try: 
                 TCPTransport.send(
                     n_info["socket"],
-                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump).to_json().encode()
+                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, flow_id=self.flow_id, metric=start_jump).to_json().encode()
                 )
                 print(f"[NODE] Enviei FLOOD para {neighbor_id}")
            
@@ -215,6 +212,7 @@ class Node:
                 origin = msg_obj.origin
                 sender = msg_obj.sender
                 jumps = msg_obj.jumps
+                flow_id = msg_obj.flow_id
 
                 new_cost = jumps + 1
 
@@ -247,7 +245,7 @@ class Node:
                     try:
                         TCPTransport.send(
                             n_info["socket"],
-                            FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost).to_json().encode()
+                            FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost, flow_id=flow_id, metric=new_cost).to_json().encode()
                         )
                     except Exception as e:
                         print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")

@@ -56,6 +56,10 @@ class HelloBackMessage(Message):
 
 # JOIN, HELLO E HELLOBACK são iguais, vale a pena diferenciar? ver mais para frente se é preciso mais alguma coisa, se não dá para usar só hello
 
+
+# ----------------------------
+# Mensagem LEAVE (saída do overlay)
+# ----------------------------
 class LeaveMessage(Message):
     TYPE = "LEAVE"
 
@@ -77,11 +81,27 @@ class PongMessage(Message):
         self.node_id = node_id
         self.seq = seq
 
+
+# ----------------------------
+# Mensagem FLOOD (inundação do overlay)
+# ----------------------------
 class FloodMessage(Message):
     TYPE = "FLOOD"
 
-    def __init__(self, origin: str, sender: str, jumps: int):
+    def __init__(self, origin: str, sender: str, jumps: int, flow_id: int, metric: float):
         self.origin = origin   # servidor / origem do flood
         self.sender = sender   # nó que enviou a mensagem
         self.jumps = jumps     # número de saltos até aqui
-    
+        self.flow_id = flow_id
+        self.metric = metric
+
+# ----------------------------
+# Mensagem ACTIVATE (ativação da rota)
+# ----------------------------
+class ActivateMessage(Message):
+    TYPE = "ACTIVATE"
+
+    def __init__(self, origin: str, client_id: str, flow_id: int):
+        self.origin = origin
+        self.client_id = client_id
+        self.flow_id = flow_id
