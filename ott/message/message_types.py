@@ -101,7 +101,7 @@ class FloodMessage(Message):
 class ActivateMessage(Message):
     TYPE = "ACTIVATE"
 
-    def __init__(self, origin: str, client_id: str, flow_id: int):
+    def __init__(self, origin: str, client_id: str, reverse_path: List[int]):
         self.origin = origin
         self.client_id = client_id
-        self.flow_id = flow_id
+        self.reverse_path = reverse_path

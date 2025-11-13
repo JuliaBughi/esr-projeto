@@ -3,8 +3,9 @@ import time
 import argparse
 import threading
 from transport.tcp_transport import TCPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage, ActivateMessage
 from message.parser import parse_message
+import threading
 
 MY_PORT = 5000
 
@@ -21,6 +22,9 @@ class Node:
         self.flow_id = 1
         self.seen_floods = set()
         self.routing_table = [] # Dicionário, chave: origin, valor: {info da melhor rota}
+        self.lock = threading.Lock()
+        self.monitor_thread_started = False
+
 
     def start(self):
         self.transport.start_listening()
@@ -28,9 +32,11 @@ class Node:
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
-        #ligar server por último mas futuramente ver se dá para melhorar isso idk
+        #ligar server por último mas futuramente ver se dá para melhorar isso idk       
         if self.my_role == "server" and len(self.neighbors) > 0:
-            self.flood()
+            # iniciar flood periódico
+            t = threading.Thread(target=self.periodic_flood, daemon=True)
+            t.start()
 
         try:
             while True:
@@ -38,18 +44,15 @@ class Node:
         except KeyboardInterrupt:
             self.graceful_leave()
 
+
     def bootstrap(self):
-        """Conecta ao bootstrapper e recebe vizinhos"""
         sock = self.transport.connect(*self.bootstrapper_addr)
         if not sock:
             print("[Bootstrapper] Falha ao conectar")
             return
-        # Envia JOIN
         TCPTransport.send(sock, JoinMessage(self.node_id).to_json().encode())
-        # Aguarda WelcomeMessage
-        time.sleep(0.5)  # espera simples
-        # Se houver resposta, a callback handle_message tratará
-        # (recebe WelcomeMessage e inicia handshake)
+        time.sleep(0.5)  
+
 
     def monitor_thread(self, interval):
         """Thread que envia PING a todos os vizinhos a cada 'interval' segundos."""
@@ -115,33 +118,69 @@ class Node:
             print(f"[Node] {self.node_id} saiu da rede com sucesso.")
             
 
-    def flood(self):
-        start_jump = 0
+    def periodic_flood(self, interval=60):
+        """
+        Server periodically floods the network announcing flows.
+        """
+        while True:
+            # incrementa id do fluxo para distinguir anúncios
+            with self.lock:
+                fid = self.flow_id
+                self.flow_id += 1
+            self.flood(flow_id=fid)
+            time.sleep(interval)
 
-        for neighbor_id, n_info in self.neighbors.items():
-            try: 
+    # atualiza flood para aceitar flow_id opcional
+    def flood(self, flow_id=None):
+        if flow_id is None:
+            with self.lock:
+                flow_id = self.flow_id
+                self.flow_id += 1
+        start_jump = 0
+        with self.lock:
+            neighbors_items = list(self.neighbors.items())
+        for neighbor_id, n_info in neighbors_items:
+            try:
                 TCPTransport.send(
                     n_info["socket"],
-                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, flow_id=self.flow_id, metric=start_jump).to_json().encode()
+                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, flow_id=flow_id, metric=start_jump).to_json().encode()
                 )
-                print(f"[NODE] Enviei FLOOD para {neighbor_id}")
-           
+                print(f"[NODE] Enviei FLOOD para {neighbor_id} (flow={flow_id})")
             except Exception as e:
                 print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
 
+
+    def update_route(self, route_entry):
+        """
+        Atualiza a routing_table de forma atómica:
+        - se já existir uma rota da mesma origin vinda do mesmo antecessor, atualiza timestamp/metric/state
+        - se existir outra rota para origin com pior métrica, substitui-a (ou mantém ambas se vier de antecessores diferentes)
+        """
+        with self.lock:
+            origin = route_entry["origin"]
+            sender = route_entry["sender"]
+            metric = route_entry["metric"]
+            # procura rota igual (mesmo origin + antecessor)
+            for r in self.routing_table:
+                if r["origin"] == origin and r["sender"] == sender:
+                    # actualiza se metric mudou/menor ou apenas timestamp
+                    r["metric"] = metric
+                    r["timestamp"] = route_entry.get("timestamp", time.time())
+                    r["state"] = route_entry.get("state", r.get("state", "INACTIVE"))
+                    return
+            # se não encontrou, adiciona nova entrada
+            self.routing_table.append(route_entry)
+
     
     def get_best_route(self, origin_id):
-        
-        # Filtra a lista para obter apenas as rotas para a origem desejada.
-        candidate_routes = [route for route in self.routing_table if route["origin"] == origin_id]
+        with self.lock:
+            candidate_routes = [route for route in self.routing_table if route["origin"] == origin_id]
+            if not candidate_routes:
+                return None
+            # preferir menor metric; se empate, preferir mais recente
+            best_route = min(candidate_routes, key=lambda r: (r["metric"], -r.get("timestamp", 0)))
+            return best_route
 
-        if not candidate_routes:
-            return None
-
-        # Encontra a rota com a menor métrica (custo) na lista de candidatos.
-        best_route = min(candidate_routes, key=lambda r: r["metric"])
-        
-        return best_route
 
     def handle_message(self, sock, data):
         """Callback para mensagens recebidas"""
@@ -179,9 +218,9 @@ class Node:
                 if sender_id in self.neighbors:
                     self.neighbors[sender_id]["established"] = True
 
-                if not hasattr(self, "monitor_thread_started"):
+                if not getattr(self, "monitor_thread_started", False):
                     self.monitor_thread_started = True
-                    self.monitor_thread(interval=120) # quanto tempo de interval?
+                    self.monitor_thread(interval=120)
 
 
             elif isinstance(msg_obj, LeaveMessage):
@@ -203,7 +242,7 @@ class Node:
                     if n_id != self.node_id and n_id not in self.neighbors:
                         peer_sock = self.transport.connect(n["ip"], n["port"])
                         if peer_sock:
-                            self.neighbors[n_id] = {"ip": n["id"], "port": n["port"], "socket": peer_sock}
+                            self.neighbors[n_id] = {"ip": n["ip"], "port": int(n["port"]), "socket": peer_sock}
                             TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
                             print(f"[Node] Conectei-me a novo vizinho {n_id}")
 
@@ -216,40 +255,100 @@ class Node:
 
                 new_cost = jumps + 1
 
-                # Prevenção de loops exatos: não processar o mesmo anúncio
-                # da mesma origem vindo do mesmo vizinho.
-                loop_key = (origin, sender)
+                loop_key = (origin, flow_id, sender)
                 if loop_key in self.seen_floods:
                     return
+                
                 self.seen_floods.add(loop_key)
 
                 # Adiciona a nova rota descoberta à lista
                 route_entry = {
                     "origin": origin,
-                    "antecessor": sender,
+                    "sender": sender,
                     "metric": new_cost,
                     "state": "INACTIVE",
                     "timestamp": time.time()
                 }
-                self.routing_table.append(route_entry)
-                print(f"[ROUTING] Nova rota aprendida para {origin} via {sender} com custo {new_cost}.")
-                print(f"-> Tabela de Rotas Atual: {self.routing_table}")
+                self.update_route(route_entry)
+               
+                with self.lock:
+                    for neighbor_id, n_info in list(self.neighbors.items()):
+                        if neighbor_id == sender:
+                            continue
+                        try:
+                            TCPTransport.send(
+                                n_info["socket"],
+                                FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost, flow_id=flow_id, metric=new_cost).to_json().encode()
+                            )
+                        except Exception as e:
+                            print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
 
-                best_route_now = self.get_best_route(origin)
-                if best_route_now:
-                    print(f"====> MELHOR ROTA ATUAL para {origin}: via {best_route_now['antecessor']} (custo {best_route_now['metric']})")
+                if self.my_role == "client":
+                    # apenas ativa se ainda não houver rota ativa para esta origem
+                    best = self.get_best_route(origin)
+                    if best and best["state"] == "INACTIVE":
+                        print(f"[CLIENT] Recebi flood de {origin}, ativando rota...")
+                        activate = ActivateMessage(origin, self.node_id, reverse_path=[])
+                        # envia Activate em direção à origem
+                        next_hop = best["sender"]
+                        if next_hop in self.neighbors:
+                            try:
+                                TCPTransport.send(
+                                    self.neighbors[next_hop]["socket"],
+                                    activate.to_json().encode()
+                                )
+                                # marca como ativa localmente
+                                with self.lock:
+                                    best["state"] = "ACTIVE"
+                                print(f"[CLIENT] Enviou ACTIVATE para {next_hop}")
+                            except Exception as e:
+                                print(f"[CLIENT] Falha ao enviar ACTIVATE: {e}")
 
-                for neighbor_id, n_info in self.neighbors.items():
-                    if neighbor_id == sender:
-                        continue
+            elif isinstance(msg_obj, ActivateMessage):
+                origin = msg_obj.origin          # servidor / origem
+                client_id = msg_obj.client_id    # quem iniciou a ativação
+                reverse_path = msg_obj.reverse_path or []
+
+                # Adiciona o nó atual ao reverse_path
+                if self.node_id not in reverse_path:
+                    reverse_path.append(self.node_id)
+
+                print(f"[Node] Recebi ACTIVATE para origin={origin}, cliente={client_id}, path={reverse_path}")
+
+                # Se já estivermos no reverse_path antes, há ciclo → descarta
+                if reverse_path.count(self.node_id) > 1:
+                    print(f"[Node] Ciclo detectado em ACTIVATE — ignorando (path={reverse_path})")
+                    return
+
+                # Marca a rota para origin como ativa (caso já exista)
+                best = self.get_best_route(origin)
+                if best:
+                    with self.lock:
+                        best["state"] = "ACTIVE"
+                        best["timestamp"] = time.time()
+
+                # Caso sejamos a origem (servidor), terminamos aqui
+                if self.node_id == origin:
+                    print(f"[Node] Sou a origem ({self.node_id}). Caminho reverso completo recebido de {client_id}: {reverse_path}")
+                    # Aqui o servidor pode armazenar reverse_path[1:] como caminho até o cliente
+                    # e iniciar envio de dados.
+                    return
+
+                # Caso contrário, encaminhar para o próximo salto em direção à origem
+                next_hop = None
+                if best:
+                    next_hop = best["sender"]
+
+                if next_hop and next_hop in self.neighbors:
                     try:
-                        TCPTransport.send(
-                            n_info["socket"],
-                            FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost, flow_id=flow_id, metric=new_cost).to_json().encode()
-                        )
+                        sock = self.neighbors[next_hop]["socket"]
+                        # Encaminhar mensagem atualizada com reverse_path
+                        TCPTransport.send(sock, ActivateMessage(origin, client_id, reverse_path).to_json().encode())
+                        print(f"[Node] Reencaminhei ACTIVATE para {next_hop}")
                     except Exception as e:
-                        print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
-
+                        print(f"[Node] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
+                else:
+                    print(f"[Node] Não encontrei next_hop válido para {origin} — descarto ACTIVATE.")
 
 
             elif isinstance(msg_obj, PingMessage):

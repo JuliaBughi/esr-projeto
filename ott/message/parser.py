@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage, ActivateMessage
 
 def parse_message(json_str: str) -> Message:
     """
@@ -36,7 +36,7 @@ def parse_message(json_str: str) -> Message:
     
     elif msg_type == "ACTIVATE":
         return ActivateMessage(origin=data["origin"], client_id=data["client_id"],
-                               flow_id=data["flow_id"])
+                               reverse_path=data["reverse_path"])
 
     else:
         # Mensagem desconhecida
