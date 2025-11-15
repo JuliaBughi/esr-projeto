@@ -1,5 +1,6 @@
 import socket
 import threading
+import struct
 
 class TCPTransport:
     def __init__(self, my_ip, my_port, on_message_callback):
@@ -33,13 +34,23 @@ class TCPTransport:
                 break
 
     def _handle_client(self, sock):
-        """Recebe mensagens e chama callback"""
+        """Recebe mensagens length-prefixed e chama callback"""
+        buffer = b''  # b'' -> byte string para mandar as mensagens pela rede 
         while True:
             try:
                 data = sock.recv(4096)
                 if not data:
                     break
-                self.on_message_callback(sock, data)
+                buffer += data
+
+                while len(buffer) >= 4: # lemos o prefixo da msg que nos diz o tamanho da mensagem
+                    msg_length = struct.unpack('!I', buffer[:4])[0]
+                    if len(buffer) < 4 + msg_length: # esperar que a mensagem acabe
+                        break
+                    msg_bytes = buffer[4:4+msg_length]
+                    buffer = buffer[4+msg_length:]  # remove a mensagem processada do buffer
+                    self.on_message_callback(sock, msg_bytes)
+
             except ConnectionResetError:
                 break
             except OSError:
@@ -59,8 +70,9 @@ class TCPTransport:
 
     @staticmethod
     def send(sock, message_bytes):
-        try:
-            sock.sendall(message_bytes)
+        try:                                                      # como message_bytes vem no tipo bytes entao len da nos o tamanho em bytes 
+            length_prefix = struct.pack('!I', len(message_bytes)) # ve o tamanho da mensagem e transforma em 4 bytes  
+            sock.sendall(length_prefix + message_bytes)           # (se o tamanho da mensagem fosse 15 bytes ficava 00 00 00 0F)
         except Exception as e:
             print(f"[TCP] Erro ao enviar: {e}")
 
@@ -74,4 +86,3 @@ class TCPTransport:
             self.server_socket.close()
         except Exception as e:
             print(f"[TCP] Erro ao fechar socket: {e}")
-

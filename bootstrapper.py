@@ -3,6 +3,7 @@ import socket
 import threading
 import argparse
 import os
+import struct
 from ott.message.message_types import JoinMessage, WelcomeMessage
 from ott.message.parser import parse_message
 
@@ -16,11 +17,30 @@ def load_topology(config_number):
     return data["nodes"]
 
 
+def send_length_prefixed(conn, message_bytes):
+    length_prefix = struct.pack('!I', len(message_bytes)) # converte os dados em bytes que podem ser mandados pela rede
+    conn.sendall(length_prefix + message_bytes)
+
+def recv_length_prefixed(conn):
+    header = conn.recv(4)
+    if not header or len(header) < 4: # se a mensagem tiver menos de 4 bytes ou a conexão fechou damos return
+        return None
+    msg_length = struct.unpack('!I', header)[0] # converte o prefixo de 4 bytes num numero que é o tamanho de bytes que tem de ler
+    msg_bytes = b''
+    while len(msg_bytes) < msg_length: # o tcp pode mandar a mensagem em chunks entao nao paramos de ler ate a mensagem acabar
+        chunk = conn.recv(msg_length - len(msg_bytes))
+        if not chunk:
+            return None
+        msg_bytes += chunk
+    return msg_bytes
+
 def handle_client(conn, nodes):
     """Atende pedidos JOIN de novos nós"""
     try:
-        data = conn.recv(1024).decode()
-        req_msg = parse_message(data)  
+        data = recv_length_prefixed(conn)
+        if not data:
+            return
+        req_msg = parse_message(data.decode()) 
         if isinstance(req_msg, JoinMessage):
             node_id = req_msg.node_id
             node_ip, node_port = node_id.split(":") 
@@ -30,7 +50,7 @@ def handle_client(conn, nodes):
                             for n in nodes[node_key]["neighbors"] if n in nodes]
             print(neighbors)
             resp_msg = WelcomeMessage(neighbors)
-            conn.send(resp_msg.to_json().encode())
+            send_length_prefixed(conn, resp_msg.to_json().encode())
     except Exception as e:
         print(f"[ERRO] {e}")
     finally:
