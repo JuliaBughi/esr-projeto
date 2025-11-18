@@ -23,7 +23,6 @@ class Node:
         self.seen_floods = set()
         self.routing_table = [] # Dicionário, chave: origin, valor: {info da melhor rota}
         self.lock = threading.Lock()
-        self.monitor_thread_started = False
 
 
     def start(self):
@@ -52,24 +51,6 @@ class Node:
             return
         TCPTransport.send(sock, JoinMessage(self.node_id).to_json().encode())
         time.sleep(0.5)  
-
-
-    def monitor_thread(self, interval):
-        """Thread que envia PING a todos os vizinhos a cada 'interval' segundos."""
-        def ping_loop():
-            while True:
-                time.sleep(interval)
-                for neighbor_id, info in list(self.neighbors.items()):
-                    try:
-                        self.next_seq += 1
-                        ping = PingMessage(self.node_id, self.next_seq)
-                        TCPTransport.send(info["socket"], ping.to_json().encode())
-                        print(f"[PING] Enviei PING para {neighbor_id}")
-                    except Exception as e:
-                        print(f"[PING] Falha ao enviar PING para {neighbor_id}: {e}")
-
-        t = threading.Thread(target=ping_loop, daemon=True) # daemon = True -> fecha automaticamente a thread quando o processo terminar
-        t.start()
 
 
     def graceful_leave(self):
@@ -217,10 +198,6 @@ class Node:
                 # Marca conexão como estabelecida ou atualiza estado
                 if sender_id in self.neighbors:
                     self.neighbors[sender_id]["established"] = True
-
-                if not getattr(self, "monitor_thread_started", False):
-                    self.monitor_thread_started = True
-                    self.monitor_thread(interval=120)
 
 
             elif isinstance(msg_obj, LeaveMessage):
