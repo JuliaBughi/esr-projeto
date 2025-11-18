@@ -3,7 +3,7 @@ import time
 import argparse
 import threading
 from transport.tcp_transport import TCPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage, ActivateMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage
 from message.parser import parse_message
 import threading
 
@@ -13,16 +13,21 @@ MY_PORT = 5000
 class Node:
     def __init__(self, my_ip, bootstrapper_addr, my_role):
         self.my_ip = my_ip
+        
         self.my_role = my_role
+
         self.node_id = f"{my_ip}:{MY_PORT}"
+
         self.bootstrapper_addr = bootstrapper_addr
-        self.transport = TCPTransport(my_ip, MY_PORT, self.handle_message)
-        self.neighbors = {} # node_id -> {"ip": ip, "port": port, "socket": sock}
-        self.next_seq = 1 
-        self.flow_id = 1
-        self.seen_floods = set()
-        self.routing_table = [] # Dicionário, chave: origin, valor: {info da melhor rota}
         self.lock = threading.Lock()
+        self.transport = TCPTransport(my_ip, MY_PORT, self.handle_message)
+
+        self.neighbors = {} # node_id -> {"ip": ip, "port": port, "socket": sock}
+
+        self.routing_table = []
+
+        self.seen_floods = set()
+
 
 
     def start(self):
@@ -33,7 +38,6 @@ class Node:
         time.sleep(1)
         #ligar server por último mas futuramente ver se dá para melhorar isso idk       
         if self.my_role == "server" and len(self.neighbors) > 0:
-            # iniciar flood periódico
             t = threading.Thread(target=self.periodic_flood, daemon=True)
             t.start()
 
@@ -51,6 +55,26 @@ class Node:
             return
         TCPTransport.send(sock, JoinMessage(self.node_id).to_json().encode())
         time.sleep(0.5)  
+
+
+    def periodic_flood(self, interval=60):
+        """
+        Server periodically floods the network announcing flows.
+        """
+        while True:   
+            start_jump = 0
+            with self.lock:
+                neighbors_items = list(self.neighbors.items())
+            for neighbor_id, n_info in neighbors_items:
+                try:
+                    TCPTransport.send(
+                        n_info["socket"],
+                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, metric=start_jump).to_json().encode()
+                    )
+                    print(f"[NODE] Enviei FLOOD para {neighbor_id}")
+                except Exception as e:
+                    print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
+            time.sleep(interval)
 
 
     def graceful_leave(self):
@@ -97,38 +121,6 @@ class Node:
             self.neighbors.clear()
             self.transport.stop_listening()
             print(f"[Node] {self.node_id} saiu da rede com sucesso.")
-            
-
-    def periodic_flood(self, interval=60):
-        """
-        Server periodically floods the network announcing flows.
-        """
-        while True:
-            # incrementa id do fluxo para distinguir anúncios
-            with self.lock:
-                fid = self.flow_id
-                self.flow_id += 1
-            self.flood(flow_id=fid)
-            time.sleep(interval)
-
-    # atualiza flood para aceitar flow_id opcional
-    def flood(self, flow_id=None):
-        if flow_id is None:
-            with self.lock:
-                flow_id = self.flow_id
-                self.flow_id += 1
-        start_jump = 0
-        with self.lock:
-            neighbors_items = list(self.neighbors.items())
-        for neighbor_id, n_info in neighbors_items:
-            try:
-                TCPTransport.send(
-                    n_info["socket"],
-                    FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, flow_id=flow_id, metric=start_jump).to_json().encode()
-                )
-                print(f"[NODE] Enviei FLOOD para {neighbor_id} (flow={flow_id})")
-            except Exception as e:
-                print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
 
 
     def update_route(self, route_entry):
@@ -228,11 +220,10 @@ class Node:
                 origin = msg_obj.origin
                 sender = msg_obj.sender
                 jumps = msg_obj.jumps
-                flow_id = msg_obj.flow_id
 
                 new_cost = jumps + 1
 
-                loop_key = (origin, flow_id, sender)
+                loop_key = (origin, sender)
                 if loop_key in self.seen_floods:
                     return
                 
@@ -255,7 +246,7 @@ class Node:
                         try:
                             TCPTransport.send(
                                 n_info["socket"],
-                                FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost, flow_id=flow_id, metric=new_cost).to_json().encode()
+                                FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost, metric=new_cost).to_json().encode()
                             )
                         except Exception as e:
                             print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
@@ -280,6 +271,7 @@ class Node:
                                 print(f"[CLIENT] Enviou ACTIVATE para {next_hop}")
                             except Exception as e:
                                 print(f"[CLIENT] Falha ao enviar ACTIVATE: {e}")
+
 
             elif isinstance(msg_obj, ActivateMessage):
                 origin = msg_obj.origin          # servidor / origem
@@ -326,24 +318,6 @@ class Node:
                         print(f"[Node] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
                 else:
                     print(f"[Node] Não encontrei next_hop válido para {origin} — descarto ACTIVATE.")
-
-
-            elif isinstance(msg_obj, PingMessage):
-                sender_id = msg_obj.node_id
-                seq = msg_obj.seq
-                print(f"[Node] Recebi PING de {sender_id}")
-
-                ip_part, port_part = sender_id.split(":")
-                self.neighbors[sender_id] = {"ip": ip_part, "port": int(port_part), "socket": sock}
-
-                TCPTransport.send(sock, PongMessage(self.node_id,seq).to_json().encode())
-                print(f"[Node] Enviei PONG para {sender_id}")
-
-
-            elif isinstance(msg_obj, PongMessage):
-                sender_id = msg_obj.node_id
-                seq = msg_obj.seq
-                print(f"[Node] Recebi PONG de {sender_id}")
             
 
             else:
@@ -357,9 +331,9 @@ class Node:
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Over the top application")
-    parser.add_argument("--role", type=str, choices = ["server", "client", "middle"], default="middle", help="Server, Client ou middle")
+    parser.add_argument("--role", type=str, choices = ["server", "client", "middle"], default="middle", help="server, client ou middle")
     parser.add_argument("--host", default="0.0.0.0", help="IP do node Host")
-    parser.add_argument("--bootstrap", default="0.0.0.0", help="IP do Bootstrapper")
+    parser.add_argument("--boot", default="0.0.0.0", help="IP do Bootstrapper")
     args = parser.parse_args()
 
     node = Node(args.host, (args.bootstrap, 5000), args.role) 

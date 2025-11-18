@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, PingMessage, PongMessage, FloodMessage, ActivateMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, FloodMessage, ActivateMessage
 
 def parse_message(json_str: str) -> Message:
     """
@@ -23,16 +23,9 @@ def parse_message(json_str: str) -> Message:
     elif msg_type == "LEAVE":
         return LeaveMessage(node_id=data["node_id"], neighbors=data["neighbors"])
     
-    elif msg_type == "PING":
-        return PingMessage(node_id=data["node_id"], seq=data["seq"])
-    
-    elif msg_type == "PONG":
-        return PongMessage(node_id=data["node_id"], seq=data["seq"])
-    
     elif msg_type == "FLOOD":
         return FloodMessage(origin=data["origin"], sender=data["sender"], 
-                            jumps=data["jumps"], flow_id=data["flow_id"],
-                            metric=data["metric"])
+                            jumps=data["jumps"], metric=data["metric"])
     
     elif msg_type == "ACTIVATE":
         return ActivateMessage(origin=data["origin"], client_id=data["client_id"],

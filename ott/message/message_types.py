@@ -67,20 +67,6 @@ class LeaveMessage(Message):
         self.node_id = node_id
         self.neighbors = neighbors
 
-class PingMessage(Message):
-    TYPE="PING"
-
-    def __init__(self, node_id: str, seq: int, timestamp: float = None):
-        self.node_id = node_id  
-        self.seq = seq       # identificador de mensangens correspondentes, mas como estamos a usar tcp este seq nao é importante mas em udp pode dar jeito
-    
-class PongMessage(Message):
-    TYPE = "PONG"
-
-    def __init__(self, node_id: str, seq: int):
-        self.node_id = node_id
-        self.seq = seq
-
 
 # ----------------------------
 # Mensagem FLOOD (inundação do overlay)
@@ -88,11 +74,10 @@ class PongMessage(Message):
 class FloodMessage(Message):
     TYPE = "FLOOD"
 
-    def __init__(self, origin: str, sender: str, jumps: int, flow_id: int, metric: float):
+    def __init__(self, origin: str, sender: str, jumps: int, metric: float):
         self.origin = origin   # servidor / origem do flood
         self.sender = sender   # nó que enviou a mensagem
         self.jumps = jumps     # número de saltos até aqui
-        self.flow_id = flow_id
         self.metric = metric
 
 # ----------------------------
