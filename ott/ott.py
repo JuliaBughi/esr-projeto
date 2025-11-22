@@ -333,16 +333,19 @@ class Node:
                 if best:
                     next_hop = best["sender"]
 
+                # Se somos a origem, não encaminhar mais
+                if self.node_id == origin:
+                    return
+
+                # Reencaminhar Activate para o next_hop sem registrar como dependente
                 if next_hop and next_hop in self.neighbors:
                     try:
                         sock_next = self.neighbors[next_hop]["socket"]
                         TCPTransport.send(sock_next, ActivateMessage(origin, client_id).to_json().encode())
                         print(f"[Node] Reencaminhei ACTIVATE para {next_hop}")
 
-                        # Registrar dependência do next_hop
-                        with self.lock:
-                            self.forwarding_table.setdefault(origin, set()).add(next_hop)
-                            print(f"[Node] Adicionei {next_hop} como dependente de {origin}")
+                        # NÃO registrar next_hop como dependente aqui
+                        # Ele será registrado quando reencaminhar para nós mais adiante
 
                     except Exception as e:
                         print(f"[Node] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
