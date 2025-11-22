@@ -40,21 +40,37 @@ def handle_client(conn, nodes):
         data = recv_length_prefixed(conn)
         if not data:
             return
-        req_msg = parse_message(data.decode()) 
+        req_msg = parse_message(data.decode())
+
         if isinstance(req_msg, JoinMessage):
-            node_id = req_msg.node_id
-            node_ip, node_port = node_id.split(":") 
-            node_port = int(node_port)
-            node_key = next((n for n, info in nodes.items() if info["host"] == node_ip), None)  
-            neighbors = [{"id": n, "host": nodes[n]["host"], "port": node_port}                
-                            for n in nodes[node_key]["neighbors"] if n in nodes]
-            print(neighbors)
-            resp_msg = WelcomeMessage(neighbors)
+            # O cliente envia algo tipo 10.0.18.20:5001
+            join_ip, join_port = req_msg.node_id.split(":")
+            join_port = int(join_port)
+            # Aqui buscamos o ID REAL do overlay (O1, O2, ...)
+            node_key = next(
+                (nid for nid, info in nodes.items() if info["host"] == join_ip),
+                None
+            )
+            if node_key is None:
+                print(f"[ERRO] IP {join_ip} não pertence a nenhum nó da topologia")
+                return
+            # Agora neighbors usa o ID correto do JSON
+            neighbors = [
+                {
+                    "id": n,
+                    "host": nodes[n]["host"],
+                    "port": join_port
+                }
+                for n in nodes[node_key]["neighbors"]
+            ]
+            print(f"[JOIN] Nó '{node_key}' conectou-se. Vizinho(s): {neighbors}")
+            resp_msg = WelcomeMessage(node_key, neighbors)
             send_length_prefixed(conn, resp_msg.to_json().encode())
     except Exception as e:
         print(f"[ERRO] {e}")
     finally:
         conn.close()
+
 
 def start_bootstrapper(config_number, host="0.0.0.0", port=5000):
     nodes = load_topology(config_number)

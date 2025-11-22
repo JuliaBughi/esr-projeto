@@ -33,8 +33,9 @@ class JoinMessage(Message):
 class WelcomeMessage(Message):
     TYPE = "WELCOME"
 
-    def __init__(self, neighbors: List[Dict[str, str]]):
-        self.neighbors = neighbors
+    def __init__(self, node_id: str, neighbors: List[Dict[str, str]]):
+        self.node_id = node_id        
+        self.neighbors = neighbors      
 
 # ----------------------------
 # Mensagem HELLOWORLD (tentativa de conexão com outros nós)

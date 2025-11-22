@@ -12,7 +12,7 @@ def parse_message(json_str: str) -> Message:
         return JoinMessage(node_id=data["node_id"])
     
     elif msg_type == "WELCOME":
-        return WelcomeMessage(neighbors=data["neighbors"])
+        return WelcomeMessage(node_id=data["node_id"], neighbors=data["neighbors"])
     
     elif msg_type == "HELLO":
         return HelloMessage(node_id=data["node_id"])
