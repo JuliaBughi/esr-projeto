@@ -28,8 +28,7 @@ def parse_message(json_str: str) -> Message:
                             jumps=data["jumps"], metric=data["metric"])
     
     elif msg_type == "ACTIVATE":
-        return ActivateMessage(origin=data["origin"], client_id=data["client_id"],
-                               reverse_path=data["reverse_path"])
+        return ActivateMessage(origin=data["origin"], client_id=data["client_id"])
 
     else:
         # Mensagem desconhecida

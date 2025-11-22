@@ -21,6 +21,9 @@ class Node:
 
         self.overlay_mapping = {}  # id do overlay -> {"host": ip, "port": port}
 
+        # Tabela de forwarding: origin -> set(dos vizinhos que dependem de mim para chegar à origem)
+        self.forwarding_table = {}
+
         # node_id -> {"ip": ip, "port": port, "socket": sock, "established": bool}
         self.neighbors = {}
 
@@ -228,161 +231,122 @@ class Node:
                         self.neighbors[sender_id]["socket"].close()
                     except:
                         pass
-                    # também limpar sock_to_id
-                    try:
-                        s = self.neighbors[sender_id]["socket"]
-                        if s in self.sock_to_id:
-                            del self.sock_to_id[s]
-                    except:
-                        pass
+
+                    # Limpa mapeamento sock -> node_id
+                    sock = self.neighbors[sender_id]["socket"]
+                    if sock in self.sock_to_id:
+                        del self.sock_to_id[sock]
+
+                    # Remove da tabela de vizinhos
                     del self.neighbors[sender_id]
                     print(f"[Node] Removi {sender_id} da tabela de vizinhos")
 
-                # Se houver lista de vizinhos, reconectar
+                # Limpar dependentes na forwarding_table
+                with self.lock:
+                    for origin, dependents in self.forwarding_table.items():
+                        if sender_id in dependents:
+                            dependents.remove(sender_id)
+                    print(f"[Node] Atualizei forwarding_table removendo {sender_id}")
+
+                # Reconectar aos vizinhos indicados na mensagem, se ainda não estivermos conectados
                 for n in msg_obj.neighbors:
                     n_id = n["id"]
                     if n_id != self.node_id and n_id not in self.neighbors:
                         peer_sock = self.transport.connect(n["ip"], n["port"])
                         if peer_sock:
-                            self.neighbors[n_id] = {"ip": n["ip"], "port": int(n["port"]), "socket": peer_sock}
+                            self.neighbors[n_id] = {
+                                "ip": n["ip"],
+                                "port": int(n["port"]),
+                                "socket": peer_sock,
+                                "established": False
+                            }
                             self.sock_to_id[peer_sock] = n_id
                             TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
                             print(f"[Node] Conectei-me a novo vizinho {n_id}")
+
 
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
                 sender = msg_obj.sender
                 jumps = msg_obj.jumps
 
-                new_cost = jumps + 1
-
-                # Policing simples para evitar repropagação infinita:
-                # Se já vimos uma métrica menor ou igual recentemente para essa origem,
-                # e vier de mesmo sender com metric pior/igual, ignoramos reenvio.
-                # Atualizamos recent_best_metric quando vemos uma melhoria.
-                best = self.recent_best_metric.get(origin)
+                new_metric = jumps + 1
                 now = time.time()
-                ignore = False
-                if best:
-                    # se a nova métrica não melhora o melhor, e veio do mesmo sender, descartamos
-                    if new_cost >= best["metric"] and sender == best.get("sender"):
-                        ignore = True
-                    # se veio com métrica pior e não é melhora razoável, podemos descartar propagar
-                    if new_cost >= best["metric"] + 3:  # heurística: salto muito maior → ignora
-                        ignore = True
 
-                if ignore:
-                    print(f"[NODE] Ignorando FLOOD de {sender} para origin {origin} (metric {new_cost}) — já temos melhor.")
-                    # ainda podemos atualizar a tabela de rotas local se for nova sender
+                # Atualiza a rota local apenas se for melhor que a existente
+                best = self.get_best_route(origin)
+                if not best or new_metric < best["metric"]:
                     route_entry = {
                         "origin": origin,
                         "sender": sender,
-                        "metric": new_cost,
+                        "metric": new_metric,
                         "state": "INACTIVE",
                         "timestamp": now
                     }
                     self.update_route(route_entry)
-                    return
+                    print(f"[Node] Atualizei rota para {origin} via {sender} (metric={new_metric})")
 
-                # Marca melhor métric/ultima visão
-                self.recent_best_metric[origin] = {"metric": new_cost, "timestamp": now, "sender": sender}
+                    # Reenvia para vizinhos, exceto quem enviou
+                    with self.lock:
+                        for neighbor_id, n_info in self.neighbors.items():
+                            if neighbor_id != sender:
+                                try:
+                                    TCPTransport.send(
+                                        n_info["socket"],
+                                        FloodMessage(origin=origin, sender=self.node_id, jumps=new_metric, metric=new_metric).to_json().encode()
+                                    )
+                                except Exception as e:
+                                    print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
 
-                # Adiciona a nova rota descoberta à lista
-                route_entry = {
-                    "origin": origin,
-                    "sender": sender,
-                    "metric": new_cost,
-                    "state": "INACTIVE",
-                    "timestamp": now
-                }
-                self.update_route(route_entry)
-
-                # Reencaminha para vizinhos (exceto quem enviou)
-                with self.lock:
-                    for neighbor_id, n_info in list(self.neighbors.items()):
-                        if neighbor_id == sender:
-                            continue
-                        try:
-                            TCPTransport.send(
-                                n_info["socket"],
-                                FloodMessage(origin=origin, sender=self.node_id, jumps=new_cost, metric=new_cost).to_json().encode()
-                            )
-                        except Exception as e:
-                            print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
-
-                # Se eu for client, e não houver rota ACTIVE ainda, disparo Activate pela melhor rota
-                if self.my_role == "client":
-                    best_route = self.get_best_route(origin)
-                    if best_route and best_route["state"] == "INACTIVE":
-                        print(f"[CLIENT] Recebi flood de {origin}, ativando rota...")
-                        activate = ActivateMessage(origin, self.node_id, reverse_path=[])
-                        # envia Activate em direção à origem
-                        next_hop = best_route["sender"]
+                    # Se for client, dispara activate na melhor rota
+                    if self.my_role == "client":
+                        next_hop = sender  # reenvia para quem enviou o flood
                         if next_hop in self.neighbors:
                             try:
                                 TCPTransport.send(
                                     self.neighbors[next_hop]["socket"],
-                                    activate.to_json().encode()
+                                    ActivateMessage(origin, self.node_id).to_json().encode()
                                 )
-                                # marca como ativa localmente
-                                with self.lock:
-                                    best_route["state"] = "ACTIVE"
-                                print(f"[CLIENT] Enviou ACTIVATE para {next_hop}")
+                                print(f"[CLIENT] Enviei ACTIVATE para {next_hop}")
+                                # Marca localmente como ACTIVE
+                                if best:
+                                    with self.lock:
+                                        best["state"] = "ACTIVE"
                             except Exception as e:
                                 print(f"[CLIENT] Falha ao enviar ACTIVATE: {e}")
 
+
             elif isinstance(msg_obj, ActivateMessage):
-                origin = msg_obj.origin          # servidor / origem
-                client_id = msg_obj.client_id    # quem iniciou a ativação
-                reverse_path = msg_obj.reverse_path or []
+                origin = msg_obj.origin
+                client_id = msg_obj.client_id
 
-                # Adiciona o nó atual ao reverse_path
-                if self.node_id not in reverse_path:
-                    reverse_path.append(self.node_id)
+                print(f"[Node] Recebi ACTIVATE para origin={origin}, cliente={client_id}")
 
-                print(f"[Node] Recebi ACTIVATE para origin={origin}, cliente={client_id}, path={reverse_path}")
-
-                # Se já estivermos no reverse_path antes, há ciclo → descarta
-                if reverse_path.count(self.node_id) > 1:
-                    print(f"[Node] Ciclo detectado em ACTIVATE — ignorando (path={reverse_path})")
-                    return
-
-                # Registrar quem nos enviou essa Activate como "child" do origin (se soubermos)
+                # Registrar quem me enviou como dependente
                 prev_hop = self.sock_to_id.get(sock)
                 if prev_hop:
                     with self.lock:
-                        self.children.setdefault(origin, set()).add(prev_hop)
-                        print(f"[Node] Registrei {prev_hop} como child de {origin}")
+                        self.forwarding_table.setdefault(origin, set()).add(prev_hop)
+                        print(f"[Node] Adicionei {prev_hop} como dependente de {origin}")
 
-                # Marca a rota para origin como ativa (caso já exista)
                 best = self.get_best_route(origin)
-                if best:
-                    with self.lock:
-                        best["state"] = "ACTIVE"
-                        best["timestamp"] = time.time()
-
-                # Caso sejamos a origem (servidor), terminamos aqui
-                if self.node_id == origin:
-                    print(f"[Node] Sou a origem ({self.node_id}). Caminho reverso completo recebido de {client_id}: {reverse_path}")
-                    # servidor pode armazenar reverse_path[1:] como caminho até o cliente
-                    # e iniciar envio de dados.
-                    return
-
-                # Caso contrário, encaminhar para o próximo salto em direção à origem
-                next_hop = None
                 if best:
                     next_hop = best["sender"]
 
                 if next_hop and next_hop in self.neighbors:
                     try:
                         sock_next = self.neighbors[next_hop]["socket"]
-                        # Encaminhar mensagem atualizada com reverse_path
-                        TCPTransport.send(sock_next, ActivateMessage(origin, client_id, reverse_path).to_json().encode())
+                        TCPTransport.send(sock_next, ActivateMessage(origin, client_id).to_json().encode())
                         print(f"[Node] Reencaminhei ACTIVATE para {next_hop}")
+
+                        # Registrar dependência do next_hop
+                        with self.lock:
+                            self.forwarding_table.setdefault(origin, set()).add(next_hop)
+                            print(f"[Node] Adicionei {next_hop} como dependente de {origin}")
+
                     except Exception as e:
                         print(f"[Node] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
-                else:
-                    print(f"[Node] Não encontrei next_hop válido para {origin} — descarto ACTIVATE.")
+
 
             else:
                 print(f"[Node] Recebi mensagem desconhecida: {msg_obj}")
