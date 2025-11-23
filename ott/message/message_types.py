@@ -1,6 +1,6 @@
 import json
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 # ----------------------------
@@ -64,9 +64,9 @@ class HelloBackMessage(Message):
 class LeaveMessage(Message):
     TYPE = "LEAVE"
 
-    def __init__(self, node_id: str, neighbors:List[Dict[str, str]]):
+    def __init__(self, node_id: str, recommended: Optional[Dict]):
         self.node_id = node_id
-        self.neighbors = neighbors
+        self.recommended = recommended
 
 
 # ----------------------------

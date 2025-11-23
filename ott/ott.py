@@ -89,49 +89,56 @@ class Node:
             time.sleep(interval)
 
     def graceful_leave(self):
-        num_neighbors = len(self.neighbors)
+        print(f"[Node] {self.node_id} iniciando graceful leave...")
 
-        if num_neighbors == 1:
-            # Caso 1: apenas 1 vizinho, avisar e fechar
-            only_neighbor_id = list(self.neighbors.keys())[0]
-            neighbor = self.neighbors[only_neighbor_id]
+        for neighbor_id, info in list(self.neighbors.items()):
+
+            # Determinar se este vizinho depende de mim (forwarding_table)
+            depends = False
+            recommended_target = None
+
+            for origin, dependents in self.forwarding_table.items():
+                if neighbor_id in dependents:
+                    depends = True
+
+                    # Encontrar o "avô" para esta origem
+                    best = self.get_best_route(origin)
+                    if best:
+                        avo_id = best["sender"]
+                        if avo_id in self.neighbors:
+                            avo_info = self.neighbors[avo_id]
+                            recommended_target = {
+                                "id": avo_id,
+                                "ip": avo_info["ip"],
+                                "port": avo_info["port"]
+                            }
+                            print(f"[Node] Recomendo {neighbor_id} → conectar ao avô {avo_id} (origin={origin})")
+
+            if depends:
+                print(f"[Node] {neighbor_id} depende de mim — enviando recommended avô")
+                msg = LeaveMessage(self.node_id, recommended_target)
+            else:
+                print(f"[Node] {neighbor_id} NÃO depende de mim — enviando leave simples")
+                msg = LeaveMessage(self.node_id, None)
+
             try:
-                TCPTransport.send(neighbor["socket"], LeaveMessage(self.node_id, []).to_json().encode())
-                print(f"[Node] Avisei {only_neighbor_id} e fechando conexão...")
-                neighbor["socket"].close()
-            except Exception as e:
-                print(f"[Node] Erro ao avisar {only_neighbor_id}: {e}")
-            self.neighbors.clear()
-            self.transport.stop_listening()
-            return
+                TCPTransport.send(info["socket"], msg.to_json().encode())
+            except:
+                pass
 
-        else:
-            # Caso 2: >1 vizinho, mandar tabela de vizinhos
-            print(f"[Node] {self.node_id} enviando tabela de vizinhos antes de sair...")
-            for v_id, v_info in list(self.neighbors.items()):
-                # construir lista de vizinhos excluindo o próprio destinatário e o nó que sai
-                neighbor_list = [
-                    {"id": nid, "ip": info["ip"], "port": info["port"]}
-                    for nid, info in self.neighbors.items()
-                    if nid != v_id  # exclui destinatário
-                ]
-                try:
-                    TCPTransport.send(v_info["socket"], LeaveMessage(self.node_id, neighbor_list).to_json().encode())
-                    print(f"[Node] Avisei {v_id} com a lista de vizinhos.")
-                except Exception as e:
-                    print(f"[Node] Erro ao avisar {v_id}: {e}")
+            try:
+                info["socket"].close()
+            except:
+                pass
 
-            # esperar alguns segundos para que os vizinhos se reconectem
-            time.sleep(2)
-            # fechar todas as conexões e parar
-            for v_id, v_info in list(self.neighbors.items()):
-                try:
-                    v_info["socket"].close()
-                except:
-                    pass
-            self.neighbors.clear()
-            self.transport.stop_listening()
-            print(f"[Node] {self.node_id} saiu da rede com sucesso.")
+            del self.neighbors[neighbor_id]
+
+        self.routing_table.clear()
+        self.forwarding_table.clear()
+        self.sock_to_id.clear()
+
+        self.transport.stop_listening()
+        print(f"[Node] {self.node_id} saiu da rede com sucesso.")
 
     def update_route(self, route_entry):
         """
@@ -226,7 +233,6 @@ class Node:
                 print(f"[Node] Recebi LEAVE de {sender_id}")
 
                 with self.lock:
-
                     # 1. Remover o vizinho da tabela de neighbors
                     if sender_id in self.neighbors:
                         try:
@@ -239,12 +245,11 @@ class Node:
                     # 2. Remover rotas na routing_table que passam pelo sender_id
                     before = len(self.routing_table)
                     self.routing_table = [
-                        r for r in self.routing_table
-                        if r["sender"] != sender_id  # rota passa por ele
+                        r for r in self.routing_table if r["sender"] != sender_id
                     ]
                     after = len(self.routing_table)
                     if before != after:
-                        print(f"[Node] Limpei {before-after} rotas que dependiam de {sender_id}")
+                        print(f"[Node] Limpei {before - after} rotas que dependiam de {sender_id}")
 
                     # 3. Remover dependentes da forwarding_table
                     for origin, deps in self.forwarding_table.items():
@@ -252,26 +257,33 @@ class Node:
                             deps.remove(sender_id)
                             print(f"[Node] Removi {sender_id} de forwarding_table[{origin}]")
 
-                    # 4. Se best_route dependia dele, invalidar
+                    # 4. Remover best_route se dependia dele
                     for origin, best in list(self.recent_best_metric.items()):
                         if best["sender"] == sender_id:
                             print(f"[Node] best_route para {origin} era via {sender_id}. Invalidando.")
-                            del self.recent_best_metric[origin]   # força recalculo
-                    # Reconectar aos vizinhos indicados na mensagem, se ainda não estivermos conectados
-                    for n in msg_obj.neighbors:
-                        n_id = n["id"]
-                        if n_id != self.node_id and n_id not in self.neighbors:
-                            peer_sock = self.transport.connect(n["ip"], n["port"])
+                            del self.recent_best_metric[origin]
+
+                    # 5. Reconexão ao nó recomendado (avô), se algum vizinho dependia de ti
+                    rec = msg_obj.recommended
+                    if rec is not None:
+                        rec_id = rec["id"]
+                        if rec_id not in self.neighbors and rec_id != self.node_id:
+                            print(f"[Node] Tentando conectar-me ao nó recomendado {rec_id}...")
+                            peer_sock = self.transport.connect(rec["ip"], rec["port"])
                             if peer_sock:
-                                self.neighbors[n_id] = {
-                                    "ip": n["ip"],
-                                    "port": int(n["port"]),
+                                self.neighbors[rec_id] = {
+                                    "ip": rec["ip"],
+                                    "port": int(rec["port"]),
                                     "socket": peer_sock,
                                     "established": False
                                 }
-                                self.sock_to_id[peer_sock] = n_id
+                                self.sock_to_id[peer_sock] = rec_id
                                 TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
-                                print(f"[Node] Conectei-me a novo vizinho {n_id}")
+                                print(f"[Node] Conectado ao avô recomendado {rec_id}")
+                            else:
+                                print(f"[Node] Falha ao conectar ao recomendado {rec_id}")
+                    else:
+                        print(f"[Node] Nenhuma reconexão necessária ou nenhum vizinho dependia de {sender_id}.")
 
 
             elif isinstance(msg_obj, FloodMessage):

@@ -21,7 +21,7 @@ def parse_message(json_str: str) -> Message:
         return HelloBackMessage(node_id=data["node_id"])
     
     elif msg_type == "LEAVE":
-        return LeaveMessage(node_id=data["node_id"], neighbors=data["neighbors"])
+        return LeaveMessage(node_id=data["node_id"], recommended=data["recommended"])
     
     elif msg_type == "FLOOD":
         return FloodMessage(origin=data["origin"], sender=data["sender"], 
