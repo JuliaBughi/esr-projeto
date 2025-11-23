@@ -225,44 +225,53 @@ class Node:
                 sender_id = msg_obj.node_id
                 print(f"[Node] Recebi LEAVE de {sender_id}")
 
-                # Remove o nó que saiu da tabela de vizinhos e fecha socket
-                if sender_id in self.neighbors:
-                    try:
-                        self.neighbors[sender_id]["socket"].close()
-                    except:
-                        pass
-
-                    # Limpa mapeamento sock -> node_id
-                    sock = self.neighbors[sender_id]["socket"]
-                    if sock in self.sock_to_id:
-                        del self.sock_to_id[sock]
-
-                    # Remove da tabela de vizinhos
-                    del self.neighbors[sender_id]
-                    print(f"[Node] Removi {sender_id} da tabela de vizinhos")
-
-                # Limpar dependentes na forwarding_table
                 with self.lock:
-                    for origin, dependents in self.forwarding_table.items():
-                        if sender_id in dependents:
-                            dependents.remove(sender_id)
-                    print(f"[Node] Atualizei forwarding_table removendo {sender_id}")
 
-                # Reconectar aos vizinhos indicados na mensagem, se ainda não estivermos conectados
-                for n in msg_obj.neighbors:
-                    n_id = n["id"]
-                    if n_id != self.node_id and n_id not in self.neighbors:
-                        peer_sock = self.transport.connect(n["ip"], n["port"])
-                        if peer_sock:
-                            self.neighbors[n_id] = {
-                                "ip": n["ip"],
-                                "port": int(n["port"]),
-                                "socket": peer_sock,
-                                "established": False
-                            }
-                            self.sock_to_id[peer_sock] = n_id
-                            TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
-                            print(f"[Node] Conectei-me a novo vizinho {n_id}")
+                    # 1. Remover o vizinho da tabela de neighbors
+                    if sender_id in self.neighbors:
+                        try:
+                            self.neighbors[sender_id]["socket"].close()
+                        except:
+                            pass
+                        del self.neighbors[sender_id]
+                        print(f"[Node] Removi {sender_id} dos neighbors.")
+
+                    # 2. Remover rotas na routing_table que passam pelo sender_id
+                    before = len(self.routing_table)
+                    self.routing_table = [
+                        r for r in self.routing_table
+                        if r["sender"] != sender_id  # rota passa por ele
+                    ]
+                    after = len(self.routing_table)
+                    if before != after:
+                        print(f"[Node] Limpei {before-after} rotas que dependiam de {sender_id}")
+
+                    # 3. Remover dependentes da forwarding_table
+                    for origin, deps in self.forwarding_table.items():
+                        if sender_id in deps:
+                            deps.remove(sender_id)
+                            print(f"[Node] Removi {sender_id} de forwarding_table[{origin}]")
+
+                    # 4. Se best_route dependia dele, invalidar
+                    for origin, best in list(self.recent_best_metric.items()):
+                        if best["sender"] == sender_id:
+                            print(f"[Node] best_route para {origin} era via {sender_id}. Invalidando.")
+                            del self.recent_best_metric[origin]   # força recalculo
+                    # Reconectar aos vizinhos indicados na mensagem, se ainda não estivermos conectados
+                    for n in msg_obj.neighbors:
+                        n_id = n["id"]
+                        if n_id != self.node_id and n_id not in self.neighbors:
+                            peer_sock = self.transport.connect(n["ip"], n["port"])
+                            if peer_sock:
+                                self.neighbors[n_id] = {
+                                    "ip": n["ip"],
+                                    "port": int(n["port"]),
+                                    "socket": peer_sock,
+                                    "established": False
+                                }
+                                self.sock_to_id[peer_sock] = n_id
+                                TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
+                                print(f"[Node] Conectei-me a novo vizinho {n_id}")
 
 
             elif isinstance(msg_obj, FloodMessage):
