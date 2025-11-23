@@ -6,6 +6,7 @@ import threading
 from transport.tcp_transport import TCPTransport
 from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage
 from message.parser import parse_message
+from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
 
 MY_PORT = 5000
 
@@ -32,9 +33,6 @@ class Node:
 
         # socket -> node_id mapping (para identificar o remetente dos pacotes)
         self.sock_to_id = {}
-
-        # children table: origin -> set(node_id) : nodos que pediram ativação via este nó
-        self.children = {}
 
         # Track best metric seen recently per origin (to help cortar repropagação/ciclos)
         # origin -> {"metric": best_metric, "timestamp": last_seen}
@@ -69,7 +67,7 @@ class Node:
         self.sock_to_id[sock] = None
         time.sleep(0.5)
 
-    def periodic_flood(self, interval=60):
+    def periodic_flood(self, interval=20):
         """
         Server periodically floods the network announcing flows.
         """
@@ -81,7 +79,7 @@ class Node:
                 try:
                     TCPTransport.send(
                         n_info["socket"],
-                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, metric=start_jump).to_json().encode()
+                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, loss=0, bandwidth=0, latency=0).to_json().encode()
                     )
                     print(f"[NODE] Enviei FLOOD para {neighbor_id}")
                 except Exception as e:
@@ -149,12 +147,13 @@ class Node:
         with self.lock:
             origin = route_entry["origin"]
             sender = route_entry["sender"]
-            metric = route_entry["metric"]
             # procura rota igual (mesmo origin + antecessor)
             for r in self.routing_table:
                 if r["origin"] == origin and r["sender"] == sender:
-                    # actualiza se metric mudou/menor ou apenas timestamp
-                    r["metric"] = metric
+                    # Atualiza métricas
+                    r["latency"] = route_entry.get("latency", r.get("latency", 0))
+                    r["loss"] = route_entry.get("loss", r.get("loss", 0))
+                    r["bandwidth"] = route_entry.get("bandwidth", r.get("bandwidth", 0))
                     r["timestamp"] = route_entry.get("timestamp", time.time())
                     r["state"] = route_entry.get("state", r.get("state", "INACTIVE"))
                     return
@@ -167,8 +166,16 @@ class Node:
             if not candidate_routes:
                 return None
             # preferir menor metric; se empate, preferir mais recente
-            best_route = min(candidate_routes, key=lambda r: (r["metric"], -r.get("timestamp", 0)))
+            best = min(
+                candidate_routes,
+                key=lambda r: r["latency"] + r["loss"]*10 - r["bandwidth"]/10
+            )
             return best_route
+
+    def compute_metric(self, latency, loss, bandwidth):
+        # peso da latência = 1, peso perda = 10, peso banda = -1 (quanto maior a banda, menor o custo)
+        return latency + loss*10 - bandwidth/10
+
 
     def handle_message(self, sock, data):
         """Callback para mensagens recebidas"""
@@ -198,36 +205,47 @@ class Node:
 
                 # Se ainda não temos a conexão com esse nó, registramos
                 if sender_id not in self.neighbors:
+                    host = None
+                    port = None
+
+                    # Se estiver no overlay mapping, usamos info de lá
                     if sender_id in self.overlay_mapping:
                         host = self.overlay_mapping[sender_id]["host"]
-                        port = self.overlay_mapping[sender_id].get("port", MY_PORT)  # fallback
-                        self.neighbors[sender_id] = {"ip": host, "port": port, "socket": sock, "established": True}
-                    else:
-                        print(f"[Node] ERRO: sender_id {sender_id} desconhecido no overlay mapping")
+                        port = self.overlay_mapping[sender_id].get("port", MY_PORT)
 
-                # mapear socket para node_id (útil para saber quem enviou mensagens futuras)
+                    # Se não estiver, usamos o socket diretamente (IP/PORT remoto)
+                    else:
+                        host, port = sock.getpeername()  # pega IP/PORT do socket TCP
+
+                    self.neighbors[sender_id] = {
+                        "ip": host,
+                        "port": port,
+                        "socket": sock,
+                        "established": True
+                    }
+                    print(f"[Node] Registrado novo vizinho {sender_id} via socket")
+
+                # Mapear socket para node_id
                 self.sock_to_id[sock] = sender_id
 
                 TCPTransport.send(sock, HelloBackMessage(self.node_id).to_json().encode())
 
+
             elif isinstance(msg_obj, HelloBackMessage):
                 sender_id = msg_obj.node_id
                 print(f"[Node] Recebi HELLOBACK de {sender_id}")
-                # Marca conexão como estabelecida ou atualiza estado
-                if sender_id in self.neighbors:
-                    self.neighbors[sender_id]["established"] = True
-                    self.sock_to_id[self.neighbors[sender_id]["socket"]] = sender_id
+
+                # Marca conexão como estabelecida ou cria entrada se não existir
+                if sender_id not in self.neighbors:
+                    host, port = sock.getpeername()
+                    self.neighbors[sender_id] = {"ip": host, "port": port, "socket": sock, "established": True}
+                    print(f"[Node] Registrado novo vizinho HELLOBACK {sender_id}")
                 else:
-                    # Se chegou HELLOBACK em socket desconhecido, registamos
-                    self.sock_to_id[sock] = sender_id
-                    # Obtemos IP/PORT do bootstrapper topo
-                    if sender_id in self.overlay_mapping:   # overlay_mapping = node_id -> {"host":..., "port": ...}
-                        host = self.overlay_mapping[sender_id]["host"]
-                        port = self.overlay_mapping[sender_id]["port"]
-                        self.neighbors[sender_id] = {"ip": host, "port": port, "socket": sock, "established": True}
-                    else:
-                        print(f"[Node] ERRO: sender_id {sender_id} desconhecido no overlay mapping")
-                            
+                    self.neighbors[sender_id]["established"] = True
+
+                self.sock_to_id[sock] = sender_id
+
+
             elif isinstance(msg_obj, LeaveMessage):
                 sender_id = msg_obj.node_id
                 print(f"[Node] Recebi LEAVE de {sender_id}")
@@ -289,11 +307,25 @@ class Node:
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
                 sender = msg_obj.sender
-                jumps = msg_obj.jumps
+                jumps = msg_obj.jumps + 1
 
-                new_metric = jumps + 1
+                # Valores antigos da mensagem
+                prev_latency = msg_obj.latency or 0
+                prev_loss = msg_obj.loss or 0
+                prev_bandwidth = msg_obj.bandwidth or 0
+
+                # Métricas do link atual
+                link_latency = get_latency(sender) or 0
+                link_loss = get_packet_loss(sender) or 0
+                link_bandwidth = get_bandwidth(sender) or 0
+
+                # Combina cumulativamente
+                latency = prev_latency + link_latency
+                loss = prev_loss + link_loss
+                bandwidth = min(prev_bandwidth, link_bandwidth) if prev_bandwidth else link_bandwidth
+
                 now = time.time()
-
+                new_metric = self.compute_metric(latency, loss, bandwidth)
                 # Atualiza a rota local apenas se for melhor que a existente
                 best = self.get_best_route(origin)
                 if not best or new_metric < best["metric"]:
@@ -314,7 +346,7 @@ class Node:
                                 try:
                                     TCPTransport.send(
                                         n_info["socket"],
-                                        FloodMessage(origin=origin, sender=self.node_id, jumps=new_metric, metric=new_metric).to_json().encode()
+                                        FloodMessage(origin=origin, sender=self.node_id, jumps=jumps, loss=loss, bandwidth=bandwidth, latency=latency).to_json().encode()
                                     )
                                 except Exception as e:
                                     print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")

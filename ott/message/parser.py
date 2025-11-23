@@ -25,7 +25,8 @@ def parse_message(json_str: str) -> Message:
     
     elif msg_type == "FLOOD":
         return FloodMessage(origin=data["origin"], sender=data["sender"], 
-                            jumps=data["jumps"], metric=data["metric"])
+                            jumps=data["jumps"], loss=data["loss"],
+                            bandwidth=data["bandwidth"], latency=data["latency"])
     
     elif msg_type == "ACTIVATE":
         return ActivateMessage(origin=data["origin"], client_id=data["client_id"])
