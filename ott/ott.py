@@ -3,6 +3,7 @@ import os
 import time
 import argparse
 import threading
+import math
 from transport.tcp_transport import TCPTransport
 from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage
 from message.parser import parse_message
@@ -79,7 +80,7 @@ class Node:
                 try:
                     TCPTransport.send(
                         n_info["socket"],
-                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, loss=0.0, bandwidth=0.0, latency=0.0).to_json().encode()
+                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, loss=0.0, bandwidth=math.inf, latency=0.0).to_json().encode()
                     )
                     print(f"[NODE] Enviei FLOOD para {neighbor_id}")
                 except Exception as e:
@@ -148,14 +149,9 @@ class Node:
             origin = route_entry["origin"]
             sender = route_entry["sender"]
             # procura rota igual (mesmo origin + antecessor)
-            for r in self.routing_table:
+            for i, r in enumerate(self.routing_table):
                 if r["origin"] == origin and r["sender"] == sender:
-                    # Atualiza métricas
-                    r["latency"] = route_entry.get("latency", r.get("latency", 0))
-                    r["loss"] = route_entry.get("loss", r.get("loss", 0))
-                    r["bandwidth"] = route_entry.get("bandwidth", r.get("bandwidth", 0))
-                    r["timestamp"] = route_entry.get("timestamp", time.time())
-                    r["state"] = route_entry.get("state", r.get("state", "INACTIVE"))
+                    self.routing_table[i] = route_entry  # substitui métricas
                     return
             # se não encontrou, adiciona nova entrada
             self.routing_table.append(route_entry)
@@ -179,9 +175,12 @@ class Node:
             return best_route
 
     def compute_metric(self, latency, loss, bandwidth):
-        # peso da latência = 1, peso perda = 10, peso banda = -1 (quanto maior a banda, menor o custo)
-        return latency + loss*10 - bandwidth/10
+        if math.isinf(bandwidth):  # evita -inf
+            bandwidth_val = 1000  # assume alta largura de banda se ainda neutra
+        else:
+            bandwidth_val = bandwidth
 
+        return latency + loss*10 - bandwidth_val/10
 
     def handle_message(self, sock, data):
         """Callback para mensagens recebidas"""
@@ -319,7 +318,7 @@ class Node:
                 # Valores antigos da mensagem
                 prev_latency = msg_obj.latency or 0
                 prev_loss = msg_obj.loss or 0
-                prev_bandwidth = msg_obj.bandwidth or 0
+                prev_bandwidth = msg_obj.bandwidth or math.inf
 
                 # Métricas do link atual
                 link_latency = get_latency(host) or 0
@@ -333,19 +332,20 @@ class Node:
 
                 now = time.time()
                 new_metric = self.compute_metric(latency, loss, bandwidth)
-                # Atualiza a rota local apenas se for melhor que a existente
-                best = self.get_best_route(origin)
-                if not best or new_metric < best["metric"]:
-                    route_entry = {
-                        "origin": origin,
-                        "sender": sender,
-                        "metric": new_metric,
-                        "state": "INACTIVE",
-                        "timestamp": now
-                    }
-                    self.update_route(route_entry)
-                    print(f"[Node] Atualizei rota para {origin} via {sender} (metric={new_metric})")
+                route_entry = {
+                    "origin": origin,
+                    "sender": sender,
+                    "metric": new_metric,
+                    "state": "INACTIVE",
+                    "timestamp": now
+                }
+                self.update_route(route_entry)
+                print(f"[Node] Atualizei tabela para {origin} via {sender} (metric={new_metric})")
 
+                best = self.get_best_route(origin)
+                # Se a rota recém-chegada é a melhor, reenvia Flood
+                if best["sender"] == sender:   
+                    print(f"[Node] Melhor rota para {origin} via {sender} (metric={new_metric})")
                     # Reenvia para vizinhos, exceto quem enviou
                     with self.lock:
                         for neighbor_id, n_info in self.neighbors.items():
