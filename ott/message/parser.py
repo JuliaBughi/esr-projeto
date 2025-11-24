@@ -24,10 +24,11 @@ def parse_message(json_str: str) -> Message:
         return LeaveMessage(node_id=data["node_id"], recommended=data["recommended"])
     
     elif msg_type == "FLOOD":
-        return FloodMessage(origin=data["origin"], sender=data["sender"], 
-                            jumps=data["jumps"], loss=data["loss"],
-                            bandwidth=data["bandwidth"], latency=data["latency"])
-    
+        return FloodMessage(
+            origin=data["origin"], sender=data["sender"],
+            jumps=data.get("jumps", 0), loss=data.get("loss", 0),
+            bandwidth=data.get("bandwidth", 0), latency=data.get("latency", 0))
+
     elif msg_type == "ACTIVATE":
         return ActivateMessage(origin=data["origin"], client_id=data["client_id"])
 

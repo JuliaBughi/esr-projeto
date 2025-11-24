@@ -75,10 +75,11 @@ class LeaveMessage(Message):
 class FloodMessage(Message):
     TYPE = "FLOOD"
 
-    def __init__(self, origin: str, sender: str, jumps: int, loss: float, bandwidth: float, latency: float):
-        self.origin = origin   
-        self.sender = sender   
-        self.jumps = jumps    
+    def __init__(self, origin: str, sender: str, jumps: int, loss: float = 0.0,
+                 bandwidth: float = 0.0, latency: float = 0.0):
+        self.origin = origin
+        self.sender = sender
+        self.jumps = jumps
         self.loss = loss
         self.bandwidth = bandwidth
         self.latency = latency

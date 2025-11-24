@@ -44,8 +44,8 @@ class Node:
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
-        # ligar server por último mas futuramente ver se dá para melhorar isso idk       
-        if self.my_role == "server" and len(self.neighbors) > 0:
+      
+        if self.my_role == "server":
             t = threading.Thread(target=self.periodic_flood, daemon=True)
             t.start()
 
@@ -79,7 +79,7 @@ class Node:
                 try:
                     TCPTransport.send(
                         n_info["socket"],
-                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, loss=0, bandwidth=0, latency=0).to_json().encode()
+                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, loss=0.0, bandwidth=0.0, latency=0.0).to_json().encode()
                     )
                     print(f"[NODE] Enviei FLOOD para {neighbor_id}")
                 except Exception as e:
@@ -162,14 +162,20 @@ class Node:
 
     def get_best_route(self, origin_id):
         with self.lock:
-            candidate_routes = [route for route in self.routing_table if route["origin"] == origin_id]
+            candidate_routes = [
+                route for route in self.routing_table
+                if route["origin"] == origin_id
+            ]
+
             if not candidate_routes:
                 return None
-            # preferir menor metric; se empate, preferir mais recente
-            best = min(
+
+            # prefere o menor metric; se empatar, prefere o mais recente
+            best_route = min(
                 candidate_routes,
-                key=lambda r: r["latency"] + r["loss"]*10 - r["bandwidth"]/10
+                key=lambda r: (r["metric"], -r["timestamp"])
             )
+
             return best_route
 
     def compute_metric(self, latency, loss, bandwidth):
@@ -307,6 +313,7 @@ class Node:
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
                 sender = msg_obj.sender
+                host = self.overlay_mapping[sender]["host"]
                 jumps = msg_obj.jumps + 1
 
                 # Valores antigos da mensagem
@@ -315,9 +322,9 @@ class Node:
                 prev_bandwidth = msg_obj.bandwidth or 0
 
                 # Métricas do link atual
-                link_latency = get_latency(sender) or 0
-                link_loss = get_packet_loss(sender) or 0
-                link_bandwidth = get_bandwidth(sender) or 0
+                link_latency = get_latency(host) or 0
+                link_loss = get_packet_loss(host) or 0
+                link_bandwidth = get_bandwidth(host) or 0
 
                 # Combina cumulativamente
                 latency = prev_latency + link_latency
