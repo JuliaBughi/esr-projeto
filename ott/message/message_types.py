@@ -93,3 +93,20 @@ class ActivateMessage(Message):
     def __init__(self, origin: str, client_id: str):
         self.origin = origin
         self.client_id = client_id
+
+# ----------------------------
+# Mensagem STREAM_DATA
+# ----------------------------
+class StreamDataMessage(Message):
+    TYPE = "STREAM_DATA"
+
+    def __init__(self, origin: str, seq_num: int, payload: str, is_last: bool = False):
+        self.origin = origin 
+        self.seq_num = seq_num
+        self.payload = payload
+        self.is_last = is_last
+
+  
+
+
+

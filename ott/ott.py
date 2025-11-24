@@ -5,7 +5,8 @@ import argparse
 import threading
 import math
 from transport.tcp_transport import TCPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage
+from transport.udp_transport import UDPTransport
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, StreamDataMessage
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
 
@@ -39,8 +40,15 @@ class Node:
         # origin -> {"metric": best_metric, "timestamp": last_seen}
         self.recent_best_metric = {}
 
+        # PARTE UDP
+        self.udp_port = MY_PORT + 1
+        self.udp_transport = UDPTransport(self.my_ip, self.udp_port, self.handle_stream_data)
+
+        self.stream_buffers = {} # origin -> {seq_num: payload}
+
     def start(self):
-        self.transport.start_listening()
+        self.transport.start_listening() # iniciar o tcp
+        self.udp_transport.start_listening() # iniciar o udp
         time.sleep(0.5)
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
@@ -181,6 +189,88 @@ class Node:
             bandwidth_val = bandwidth
 
         return latency + loss*10 - bandwidth_val/10
+    
+    def start_streaming(self, origin_id, animation_file="animation.txt"):
+        # Lê um ficheiro de texto e envia cada linha como um pacote de stream
+        if self.my_role != "server" or self.node_id != origin_id:
+            print("[STREAM] Apenas o servidor de origem pode iniciar o streaming.")
+            return
+        
+        print(f"[STREAM] A iniciar stream para a origem {origin_id}...")
+        
+        try:
+            with open(animation_file, "r") as f:
+                lines = f.readlines()
+            
+            seq_num = 0
+            for line in lines:
+                payload = line.strip() # Remove a quebra de linha
+                seq_num += 1
+                is_last = (seq_num == len(lines))
+
+                # Cria a mensagem de dados
+                stream_msg = StreamDataMessage(origin_id, seq_num, payload, is_last)
+                msg_bytes = stream_msg.to_json().encode()
+
+                # Envia para todos os dependentes na forwarding_table
+                with self.lock:
+                    dependents = self.forwarding_table.get(origin_id, set())
+                
+                if not dependents:
+                    print("[STREAM] Nenhum cliente ativou o stream. A parar.")
+                    break
+                
+                for dependent_id in dependents:
+                    if dependent_id in self.neighbors:
+                        n_info = self.neighbors[dependent_id]
+                        print(f"    -> Enviando frame {seq_num} para {dependent_id}")
+                        self.udp_transport.send(n_info["ip"], self.udp_port, msg_bytes)
+                
+                time.sleep(0.2) # Controla a velocidade da animação (5 frames/seg)
+            
+            print(f"[STREAM] Fim do stream para a origem {origin_id}.")
+
+        except FileNotFoundError:
+            print(f"[ERRO] Ficheiro de animação '{animation_file}' não encontrado.")
+        except Exception as e:
+            print(f"[ERRO] Falha no streaming: {e}")
+
+    def handle_stream_data(self, data, sender_addr):
+        """Lida com pacotes de stream recebidos via UDP."""
+        try:
+            msg_obj = parse_message(data.decode())
+            if not isinstance(msg_obj, StreamDataMessage):
+                return
+            
+            origin = msg_obj.origin
+            
+            if self.my_role == "client":
+                # Limpa o terminal e imprime o frame
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print("--- A RECEBER STREAM ---")
+                print(msg_obj.payload)
+                print(f"(Frame {msg_obj.seq_num} de {origin})")
+                if msg_obj.is_last:
+                    print("--- FIM DO STREAM ---")
+                return
+
+            # --- LÓGICA DO NÓ INTERMEDIÁRIO ---
+            with self.lock:
+                dependents = self.forwarding_table.get(origin, set())
+            
+            if not dependents:
+                return # Se ninguém depende de nós, não fazemos nada
+
+            # Reencaminha o pacote de dados para todos os nossos dependentes
+            for dependent_id in dependents:
+                if dependent_id in self.neighbors:
+                    n_info = self.neighbors[dependent_id]
+                    # Nota: reencaminhamos o pacote original em bytes, é mais eficiente
+                    self.udp_transport.send(n_info["ip"], self.udp_port, data)
+
+        except Exception as e:
+            # UDP pode receber pacotes corrompidos, é normal ignorar
+            pass
 
     def handle_message(self, sock, data):
         """Callback para mensagens recebidas"""
@@ -393,9 +483,12 @@ class Node:
                 if best:
                     next_hop = best["sender"]
 
-                # Se somos a origem, não encaminhar mais
+                # Se somos a origem, iniciamos o streaming
                 if self.node_id == origin:
-                    return
+                    # inicia o streaming numa thread para não bloquear o handle_message
+                    stream_thread = threading.Thread(target=self.start_streaming, args=(origin,))
+                    stream_thread.start()
+                    return # não reencaminha mais
 
                 # Reencaminhar Activate para o next_hop sem registrar como dependente
                 if next_hop and next_hop in self.neighbors:
