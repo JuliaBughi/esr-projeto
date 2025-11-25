@@ -6,9 +6,17 @@ import threading
 import math
 from transport.tcp_transport import TCPTransport
 from transport.udp_transport import UDPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, StreamDataMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
+
+# imports para stream
+from streaming.VideoStream import VideoStream
+from streaming.RtpPacket import RtpPacket
+from tkinter import Tk, Label
+from PIL import Image, ImageTk
+import io
+import base64
 
 MY_PORT = 5000
 
@@ -17,6 +25,7 @@ class Node:
     def __init__(self, my_ip, bootstrapper_addr, my_role):
         self.my_ip = my_ip
         self.my_role = my_role
+
         self.node_id = f"{my_ip}:{MY_PORT}"
         self.bootstrapper_addr = bootstrapper_addr
         self.lock = threading.Lock()
@@ -44,7 +53,27 @@ class Node:
         self.udp_port = MY_PORT + 1
         self.udp_transport = UDPTransport(self.my_ip, self.udp_port, self.handle_stream_data)
 
-        self.stream_buffers = {} # origin -> {seq_num: payload}
+        self.video_player = None
+        self.tk_root = None
+        if self.my_role == "client":
+            try:
+                # Inicia a parte gráfica numa thread separada para não bloquear a rede
+                self.tk_root = Tk()
+                self.video_player = VideoClientGUI(self.tk_root, self.graceful_leave)
+            except Exception as e:
+                print(f"[ERRO CRÍTICO NA GUI] Falha ao iniciar o Tkinter: {e}")
+                import traceback
+                traceback.print_exc()
+                # Se a GUI falhar, definimos tk_root como None para não haver mais erros
+                self.tk_root = None
+
+    def _update_tkinter(self):
+        try:
+            if self.video_player:
+                self.tk_root.update()
+                self.tk_root.after(100, self._update_tkinter)
+        except: # A janela pode ter sido fechada
+            pass
 
     def start(self):
         self.transport.start_listening() # iniciar o tcp
@@ -57,12 +86,6 @@ class Node:
         if self.my_role == "server":
             t = threading.Thread(target=self.periodic_flood, daemon=True)
             t.start()
-
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            self.graceful_leave()
 
     def bootstrap(self):
         sock = self.transport.connect(*self.bootstrapper_addr)
@@ -190,86 +213,91 @@ class Node:
 
         return latency + loss*10 - bandwidth_val/10
     
-    def start_streaming(self, origin_id, animation_file="animation.txt"):
-        # Lê um ficheiro de texto e envia cada linha como um pacote de stream
+    # ott.py -> Adicionar este novo método à classe Node
+
+    def start_rtp_stream(self, origin_id, video_file="movie.Mjpeg"):
+        """
+        Inicia o streaming de vídeo. Lê frames, cria pacotes RTP binários
+        e envia-os diretamente via UDP para os dependentes.
+        """
         if self.my_role != "server" or self.node_id != origin_id:
-            print("[STREAM] Apenas o servidor de origem pode iniciar o streaming.")
             return
-        
-        print(f"[STREAM] A iniciar stream para a origem {origin_id}...")
+
+        print(f"[STREAM] A iniciar stream RTP para a origem {origin_id}...")
         
         try:
-            with open(animation_file, "r") as f:
-                lines = f.readlines()
+            video_stream = VideoStream(video_file)
             
-            seq_num = 0
-            for line in lines:
-                payload = line.strip() # Remove a quebra de linha
-                seq_num += 1
-                is_last = (seq_num == len(lines))
-
-                # Cria a mensagem de dados
-                stream_msg = StreamDataMessage(origin_id, seq_num, payload, is_last)
-                msg_bytes = stream_msg.to_json().encode()
-
-                # Envia para todos os dependentes na forwarding_table
+            while True:
                 with self.lock:
+                    # Verifica se há clientes ativos (dependentes diretos)
                     dependents = self.forwarding_table.get(origin_id, set())
                 
                 if not dependents:
-                    print("[STREAM] Nenhum cliente ativou o stream. A parar.")
-                    break
-                
+                    print("[STREAM] Nenhum cliente ativo. Stream em pausa.")
+                    time.sleep(1) # Espera por um cliente
+                    continue
+
+                # 1. Obter o próximo frame do ficheiro de vídeo
+                frame_data = video_stream.nextFrame()
+                if not frame_data:
+                    print("[STREAM] Fim do ficheiro de vídeo.")
+                    break # Termina o loop de streaming
+
+                frame_number = video_stream.frameNbr()
+
+                # 2. Criar o pacote RTP binário
+                rtp_packet = RtpPacket()
+                rtp_packet.encode(version=2, padding=0, extension=0, cc=0, seqnum=frame_number, 
+                                  marker=0, pt=26, ssrc=0, payload=frame_data)
+                packet_bytes = rtp_packet.getPacket() # Estes são os bytes que vamos enviar
+
+                # 3. Enviar os bytes do pacote RTP DIRETAMENTE via UDP para todos os dependentes
                 for dependent_id in dependents:
                     if dependent_id in self.neighbors:
                         n_info = self.neighbors[dependent_id]
-                        print(f"    -> Enviando frame {seq_num} para {dependent_id}")
-                        self.udp_transport.send(n_info["ip"], self.udp_port, msg_bytes)
+                        print(f"    -> Enviando frame RTP {frame_number} ({len(packet_bytes)} bytes) para {dependent_id}")
+                        self.udp_transport.send(n_info["ip"], self.udp_port, packet_bytes)
                 
-                time.sleep(0.2) # Controla a velocidade da animação (5 frames/seg)
+                # Controla a taxa de frames (20 fps = 0.05s)
+                time.sleep(0.05)
             
-            print(f"[STREAM] Fim do stream para a origem {origin_id}.")
+            print(f"[STREAM] Stream RTP terminado para {origin_id}.")
 
         except FileNotFoundError:
-            print(f"[ERRO] Ficheiro de animação '{animation_file}' não encontrado.")
+            print(f"[ERRO] Ficheiro de vídeo '{video_file}' não encontrado.")
         except Exception as e:
-            print(f"[ERRO] Falha no streaming: {e}")
+            print(f"[ERRO] Falha no streaming RTP: {e}")
 
-    def handle_stream_data(self, data, sender_addr):
-        """Lida com pacotes de stream recebidos via UDP."""
+    def handle_stream_data(self, data: bytes, sender_addr: tuple):
+        """Lida com pacotes RTP binários recebidos via UDP."""
         try:
-            msg_obj = parse_message(data.decode())
-            if not isinstance(msg_obj, StreamDataMessage):
-                return
-            
-            origin = msg_obj.origin
-            
-            if self.my_role == "client":
-                # Limpa o terminal e imprime o frame
-                os.system('cls' if os.name == 'nt' else 'clear')
-                print("--- A RECEBER STREAM ---")
-                print(msg_obj.payload)
-                print(f"(Frame {msg_obj.seq_num} de {origin})")
-                if msg_obj.is_last:
-                    print("--- FIM DO STREAM ---")
+            if self.my_role == "client" and self.video_player:
+                rtp_packet = RtpPacket()
+                rtp_packet.decode(data)
+                frame_payload = rtp_packet.getPayload()
+                if frame_payload:                   
+                    self.video_player.update_frame(frame_payload)
                 return
 
-            # --- LÓGICA DO NÓ INTERMEDIÁRIO ---
+            all_dependents = set()
             with self.lock:
-                dependents = self.forwarding_table.get(origin, set())
-            
-            if not dependents:
-                return # Se ninguém depende de nós, não fazemos nada
+                for origin in self.forwarding_table:
+                    all_dependents.update(self.forwarding_table[origin])
 
-            # Reencaminha o pacote de dados para todos os nossos dependentes
-            for dependent_id in dependents:
+            if not all_dependents:
+                # Se ninguém depende de nós para NADA, descartamos o pacote.
+                # Podemos adicionar um log para ver se isto acontece
+                print(f"[{self.node_id}] Descartei pacote UDP, FWD table vazia.")
+                return
+
+            # Reencaminha os bytes do pacote RTP original para todos os dependentes
+            for dependent_id in all_dependents:
                 if dependent_id in self.neighbors:
                     n_info = self.neighbors[dependent_id]
-                    # Nota: reencaminhamos o pacote original em bytes, é mais eficiente
                     self.udp_transport.send(n_info["ip"], self.udp_port, data)
-
+                
         except Exception as e:
-            # UDP pode receber pacotes corrompidos, é normal ignorar
             pass
 
     def handle_message(self, sock, data):
@@ -364,7 +392,7 @@ class Node:
                     if before != after:
                         print(f"[Node] Limpei {before - after} rotas que dependiam de {sender_id}")
 
-                    # 3. Remover dependentes da forwarding_table
+                    # 3. Remover dependenprint(f"    -> [ERRO DE LÓGICA] Recebi ACTIVATE mas não consegui identificar o remetente do socket! Tabela de FWD não atualizada.")tes da forwarding_table
                     for origin, deps in self.forwarding_table.items():
                         if sender_id in deps:
                             deps.remove(sender_id)
@@ -470,46 +498,70 @@ class Node:
                 origin = msg_obj.origin
                 client_id = msg_obj.client_id
 
-                print(f"[Node] Recebi ACTIVATE para origin={origin}, cliente={client_id}")
+                print(f"[{self.node_id}] Recebi ACTIVATE para origin={origin}, cliente={client_id}")
 
-                # Registrar quem me enviou como dependente
                 prev_hop = self.sock_to_id.get(sock)
                 if prev_hop:
                     with self.lock:
                         self.forwarding_table.setdefault(origin, set()).add(prev_hop)
-                        print(f"[Node] Adicionei {prev_hop} como dependente de {origin}")
+                        print(f"    -> Adicionei '{prev_hop}' como dependente para '{origin}'. FWD Table: {self.forwarding_table}")
+                else:
+                    print(f"    -> [AVISO] Não identifiquei remetente do ACTIVATE. FWD table não foi atualizada.")
+                    # Se não sabemos quem pediu, não podemos continuar a cadeia.
+                    return
 
-                best = self.get_best_route(origin)
-                if best:
-                    next_hop = best["sender"]
-
-                # Se somos a origem, iniciamos o streaming
                 if self.node_id == origin:
-                    # inicia o streaming numa thread para não bloquear o handle_message
-                    stream_thread = threading.Thread(target=self.start_streaming, args=(origin,))
+                    print(f"    -> Sou a origem. A iniciar stream.")
+                    stream_thread = threading.Thread(target=self.start_rtp_stream, args=(origin,))
                     stream_thread.start()
-                    return # não reencaminha mais
-
-                # Reencaminhar Activate para o next_hop sem registrar como dependente
+                    return # O fluxo de controlo para aqui para o servidor.
+                
+                next_hop = None
+                best_route = self.get_best_route(origin)
+                if best_route:
+                    next_hop = best_route["sender"]
+                
                 if next_hop and next_hop in self.neighbors:
+                    print(f"    -> A reencaminhar ACTIVATE para o meu antecessor: {next_hop}")
                     try:
                         sock_next = self.neighbors[next_hop]["socket"]
+                        # Reenvia a mensagem original, preservando o client_id
                         TCPTransport.send(sock_next, ActivateMessage(origin, client_id).to_json().encode())
-                        print(f"[Node] Reencaminhei ACTIVATE para {next_hop}")
-
-                        # NÃO registrar next_hop como dependente aqui
-                        # Ele será registrado quando reencaminhar para nós mais adiante
-
                     except Exception as e:
-                        print(f"[Node] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
-
-
-            else:
-                print(f"[Node] Recebi mensagem desconhecida: {msg_obj}")
+                        print(f"    -> Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
+                else:
+                    print(f"    -> Não reencaminhei ACTIVATE. Motivo: Não tenho uma rota válida ou o antecessor já não é meu vizinho.")
 
         except Exception as e:
             print(f"[Node] Erro ao processar mensagem: {e}")
 
+
+class VideoClientGUI:
+    def __init__(self, tk_root, on_close_callback):
+        self.root = tk_root
+        self.root.title("OTT Video Player")
+        self.on_close_callback = on_close_callback
+        self.root.protocol("WM_DELETE_WINDOW", self.handler)
+        self.label = Label(self.root)
+        self.label.pack()
+
+    def update_frame(self, frame_data):
+        """Recebe os bytes de um frame JPEG e exibe-os."""
+        try:
+            image = Image.open(io.BytesIO(frame_data))
+            photo = ImageTk.PhotoImage(image)
+            self.label.config(image=photo)
+            self.label.image = photo
+        except Exception:
+            # Ignora frames corrompidos, o que é comum em UDP
+            pass
+
+    def handler(self):
+        """Chamado quando a janela é fechada."""
+        # Chama a função de graceful_leave do nó principal
+        self.on_close_callback()
+        # Fecha a janela gráfica
+        self.root.destroy()
 
 # ----------------------------
 # Main
@@ -523,4 +575,25 @@ if __name__ == "__main__":
 
     # corrigido: usar args.boot e passar porta 5000
     node = Node(args.host, (args.boot, 5000), args.role)
-    node.start()
+    threading.Thread(target=node.start, daemon=True).start()
+
+    if node.my_role == "client":
+        # Se for um cliente, e se a inicialização da GUI tiver sido bem sucedida
+        if node.tk_root:
+            print("[DEBUG] A entregar o controlo ao mainloop do Tkinter...")
+            try:
+                # Esta função bloqueia e só retorna quando a janela é fechada
+                node.tk_root.mainloop()
+            finally:
+                # Garante que o graceful_leave é chamado quando a janela fecha
+                node.graceful_leave()
+        else:
+            print("[AVISO] GUI não foi iniciada. O nó cliente vai terminar pois não tem nada para fazer.")
+    else:
+        # Se for um servidor ou nó intermediário, esperamos com um loop simples
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n[MAIN] Ctrl+C detectado. A iniciar saída graciosa...")
+            node.graceful_leave()

@@ -17,8 +17,10 @@ class UDPTransport:
     def _listen_loop(self):
         while True:
             try:
-                # O UDP é sem conexão, recebemos dados e o endereço do remetente
-                data, sender_addr = self.udp_socket.recvfrom(4096) 
+                # Aumentar o tamanho do buffer para acomodar frames de vídeo grandes.
+                # 65535 é o tamanho máximo teórico de um datagrama UDP.
+                data, sender_addr = self.udp_socket.recvfrom(65535) 
+
                 if data:
                     self.on_message_callback(data, sender_addr)
             except Exception as e:
