@@ -94,7 +94,24 @@ class ActivateMessage(Message):
         self.origin = origin
         self.client_id = client_id
 
+# ----------------------------
+# Mensagem DANGER (proteção de nodos folha)
+# ----------------------------
+class DangerMessage(Message):
+    TYPE = "DANGER"
+    
+    def __init__(self, node_id: str):
+        self.node_id = node_id
 
+# ----------------------------
+# Mensagem SAFEOPTION (proteção de nodos folha)
+# ----------------------------
+class SafeOptionMessage(Message):
+    TYPE = "SAFEOPTION"
+    
+    def __init__(self, node_id: str, safe: str):
+        self.node_id = node_id
+        self.safe = safe
   
 
 

@@ -6,7 +6,7 @@ import threading
 import math
 from transport.tcp_transport import TCPTransport
 from transport.udp_transport import UDPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
 
@@ -48,6 +48,11 @@ class Node:
         # Track best metric seen recently per origin (to help cortar repropagação/ciclos)
         # origin -> {"metric": best_metric, "timestamp": last_seen}
         self.recent_best_metric = {}
+
+        self.danger = []         # lista de nodos que disseram "estou em perigo"
+        self.safe_option = None  # nodo seguro para onde devo fugir se o meu antecessor morrer
+        self.ready_after_welcome = False
+        self.pending_danger = False
 
         # PARTE UDP
         self.udp_port = MY_PORT + 1
@@ -122,35 +127,47 @@ class Node:
         print(f"[Node] {self.node_id} iniciando graceful leave...")
 
         for neighbor_id, info in list(self.neighbors.items()):
-
-            # Determinar se este vizinho depende de mim (forwarding_table)
             depends = False
             recommended_target = None
 
+            # procura dependências 
             for origin, dependents in self.forwarding_table.items():
-                if neighbor_id in dependents:
+
+                if neighbor_id not in dependents:
+                    continue  # o vizinho não depende deste nodo 
+
+                # Obtém minha rota para origin (que ele herdou)
+                best = self.get_best_route(origin)
+                if not best:
+                    continue  # rota já morta, depende obsoleta
+
+                avo_id = best["sender"]  # o nó que me deu a rota (true avô)
+
+                if avo_id == self.node_id:
+                    # Rota originava em mim → não há avô
+                    continue
+
+                if avo_id in self.neighbors:
                     depends = True
 
-                    # Encontrar o "avô" para esta origem
-                    best = self.get_best_route(origin)
-                    if best:
-                        avo_id = best["sender"]
-                        if avo_id in self.neighbors:
-                            avo_info = self.neighbors[avo_id]
-                            recommended_target = {
-                                "id": avo_id,
-                                "ip": avo_info["ip"],
-                                "port": avo_info["port"]
-                            }
-                            print(f"[Node] Recomendo {neighbor_id} → conectar ao avô {avo_id} (origin={origin})")
+                    avo_info = self.neighbors[avo_id]
+                    recommended_target = {
+                        "id": avo_id,
+                        "ip": avo_info["ip"],
+                        "port": avo_info["port"]
+                    }
 
+                    print(f"[Node] {neighbor_id} depende de mim para {origin} → recomendar avô {avo_id}")
+
+            # Decide a mensagem final
             if depends:
-                print(f"[Node] {neighbor_id} depende de mim — enviando recommended avô")
                 msg = LeaveMessage(self.node_id, recommended_target)
+                print(f"[Node] {neighbor_id} depende de mim — enviando recommended.")
             else:
-                print(f"[Node] {neighbor_id} NÃO depende de mim — enviando leave simples")
                 msg = LeaveMessage(self.node_id, None)
+                print(f"[Node] {neighbor_id} NÃO depende de mim — leave simples.")
 
+            # Envia e fecha
             try:
                 TCPTransport.send(info["socket"], msg.to_json().encode())
             except:
@@ -163,6 +180,7 @@ class Node:
 
             del self.neighbors[neighbor_id]
 
+        # limpa tudo
         self.routing_table.clear()
         self.forwarding_table.clear()
         self.sock_to_id.clear()
@@ -212,8 +230,6 @@ class Node:
             bandwidth_val = bandwidth
 
         return latency + loss*10 - bandwidth_val/10
-    
-    # ott.py -> Adicionar este novo método à classe Node
 
     def start_rtp_stream(self, origin_id, video_file="movie.Mjpeg"):
         """
@@ -300,6 +316,33 @@ class Node:
         except Exception as e:
             pass
 
+    def get_grandparent(self):
+        # este nó tem uma rota ativa para a origem?
+        for origin in self.forwarding_table:
+            best = self.get_best_route(origin)
+            if best:
+                parent = best["sender"]
+                if parent != self.node_id:
+                    return parent
+        return None
+
+    def catastrophic_warning(self):
+        print(f"[{self.node_id}] Estou em perigo! A avisar o meu vizinho principal...")
+
+        # Encontrar next-hop para origem (quem me deu a rota)
+        for origin, dependents in self.forwarding_table.items():
+            best = self.get_best_route(origin)
+            if best and best["sender"] in self.neighbors:
+                parent = best["sender"]
+                TCPTransport.send(
+                    self.neighbors[parent]["socket"],
+                    DangerMessage(self.node_id).to_json().encode()
+                )
+                return
+
+        print("Não encontrei antecessor para avisar!")
+
+
     def handle_message(self, sock, data):
         """Callback para mensagens recebidas"""
         if not data:
@@ -320,6 +363,12 @@ class Node:
                         self.neighbors[n_id] = {"ip": n["host"], "port": n["port"], "socket": peer_sock, "established": False}
                         self.sock_to_id[peer_sock] = n_id
                         TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
+                self.ready_after_welcome = True
+
+                # Verificar se este nó é folha
+                if len(msg_obj.neighbors) == 1:
+                    print(f"[Node] Sou folha após o WELCOME — posso entrar em perigo quando HELLO estabelecer.")
+                    self.pending_danger = True
 
 
             elif isinstance(msg_obj, HelloMessage):
@@ -353,6 +402,10 @@ class Node:
 
                 TCPTransport.send(sock, HelloBackMessage(self.node_id).to_json().encode())
 
+                if self.ready_after_welcome and self.pending_danger:
+                    print(f"[Node] Handshake com {sender_id} concluído e sou folha — enviando catastrophic_warning()")
+                    self.pending_danger = False
+                    self.catastrophic_warning()
 
             elif isinstance(msg_obj, HelloBackMessage):
                 sender_id = msg_obj.node_id
@@ -404,12 +457,20 @@ class Node:
                             print(f"[Node] best_route para {origin} era via {sender_id}. Invalidando.")
                             del self.recent_best_metric[origin]
 
-                    # 5. Reconexão ao nó recomendado (avô), se algum vizinho dependia de ti
+                    # 5. Reconexão ao nó recomendado (avô)
                     rec = msg_obj.recommended
+
                     if rec is not None:
                         rec_id = rec["id"]
-                        if rec_id not in self.neighbors and rec_id != self.node_id:
-                            print(f"[Node] Tentando conectar-me ao nó recomendado {rec_id}...")
+
+                        # Só conecta se houver razão real
+                        still_needs_route = any(
+                            r["sender"] == sender_id for r in self.routing_table
+                        )
+
+                        # Verificar se rota para o origin agora está sem next-hop
+                        if still_needs_route and rec_id not in self.neighbors and rec_id != self.node_id:
+                            print(f"[Node] Recomendação válida — tentando conectar ao avô {rec_id}...")
                             peer_sock = self.transport.connect(rec["ip"], rec["port"])
                             if peer_sock:
                                 self.neighbors[rec_id] = {
@@ -423,9 +484,11 @@ class Node:
                                 print(f"[Node] Conectado ao avô recomendado {rec_id}")
                             else:
                                 print(f"[Node] Falha ao conectar ao recomendado {rec_id}")
+                        else:
+                            print(f"[Node] Ignorando recomendação — rota já resolvida ou rec já conectado.")
                     else:
                         print(f"[Node] Nenhuma reconexão necessária ou nenhum vizinho dependia de {sender_id}.")
-
+            
 
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
@@ -531,6 +594,37 @@ class Node:
                         print(f"    -> Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
                 else:
                     print(f"    -> Não reencaminhei ACTIVATE. Motivo: Não tenho uma rota válida ou o antecessor já não é meu vizinho.")
+
+            elif isinstance(msg_obj, DangerMessage):
+                danger_node = msg_obj.node_id
+                print(f"[{self.node_id}] Recebi DANGER de {danger_node}")
+
+                with self.lock:
+                    # Já tenho outros ameaçados?
+                    if not self.danger:
+                        # Lista vazia → enviar avô
+                        safe = self.get_grandparent()
+                        self.danger.append(danger_node)
+                        print(f"[{self.node_id}] danger vazio → safe_option para {danger_node} é {safe}")
+                    else:
+                        # Lista cheia → enviar o último!
+                        safe = self.danger[-1]
+                        self.danger.append(danger_node)
+                        print(f"[{self.node_id}] danger já tem elementos → safe_option para {danger_node} é {safe}")
+
+                # Enviar mensagem SafeOption de volta ao nodo em perigo
+                try:
+                    TCPTransport.send(
+                        self.neighbors[danger_node]["socket"],
+                        SafeOptionMessage(self.node_id, safe).to_json().encode()
+                    )
+                except:
+                    print(f"[{self.node_id}] Falha ao enviar safe_option para {danger_node}")
+
+            elif isinstance(msg_obj, SafeOptionMessage):
+                self.safe_option = msg_obj.safe
+                print(f"[{self.node_id}] safe_option atualizado: agora devo reconectar a {self.safe_option} se houver falha.")
+
 
         except Exception as e:
             print(f"[Node] Erro ao processar mensagem: {e}")

@@ -32,6 +32,15 @@ def parse_message(json_str: str) -> Message:
     elif msg_type == "ACTIVATE":
         return ActivateMessage(origin=data["origin"], client_id=data["client_id"])
 
+    elif msg_type == "DANGER":
+        return DangerMessage(node_id=data["node_id"])
+
+    elif msg_type == "SAFEOPTION":
+        return SafeOptionMessage(
+            node_id=data["node_id"],
+            safe=data["safe"]
+        )
+
     else:
         # Mensagem desconhecida
         return Message()
