@@ -89,8 +89,8 @@ class Node:
         time.sleep(1)
       
         if self.my_role == "server":
-            t = threading.Thread(target=self.periodic_flood, daemon=True)
-            t.start()
+            threading.Thread(target=self.periodic_flood, daemon=True).start()
+            threading.Thread(target=self.start_rtp_stream, args=(self.node_id,), daemon=True).start()
 
     def bootstrap(self):
         sock = self.transport.connect(*self.bootstrapper_addr)
@@ -104,7 +104,7 @@ class Node:
         self.sock_to_id[sock] = None
         time.sleep(0.5)
 
-    def periodic_flood(self, interval=20):
+    def periodic_flood(self, interval=10):
         """
         Server periodically floods the network announcing flows.
         """
@@ -245,28 +245,22 @@ class Node:
             video_stream = VideoStream(video_file)
             
             while True:
-                with self.lock:
-                    # Verifica se há clientes ativos (dependentes diretos)
-                    dependents = self.forwarding_table.get(origin_id, set())
-                
-                if not dependents:
-                    print("[STREAM] Nenhum cliente ativo. Stream em pausa.")
-                    time.sleep(1) # Espera por um cliente
-                    continue
-
                 # 1. Obter o próximo frame do ficheiro de vídeo
                 frame_data = video_stream.nextFrame()
                 if not frame_data:
-                    print("[STREAM] Fim do ficheiro de vídeo.")
-                    break # Termina o loop de streaming
+                    video_stream = VideoStream(video_file)  # reinicia o video
+                    continue
 
                 frame_number = video_stream.frameNbr()
-
                 # 2. Criar o pacote RTP binário
                 rtp_packet = RtpPacket()
                 rtp_packet.encode(version=2, padding=0, extension=0, cc=0, seqnum=frame_number, 
                                   marker=0, pt=26, ssrc=0, payload=frame_data)
                 packet_bytes = rtp_packet.getPacket() # Estes são os bytes que vamos enviar
+
+                with self.lock:
+                    # Verifica se há clientes ativos (dependentes diretos)
+                    dependents = self.forwarding_table.get(origin_id, set())
 
                 # 3. Enviar os bytes do pacote RTP DIRETAMENTE via UDP para todos os dependentes
                 for dependent_id in dependents:
@@ -274,14 +268,12 @@ class Node:
                         n_info = self.neighbors[dependent_id]
                         print(f"    -> Enviando frame RTP {frame_number} ({len(packet_bytes)} bytes) para {dependent_id}")
                         self.udp_transport.send(n_info["ip"], self.udp_port, packet_bytes)
-                
+
                 # Controla a taxa de frames (20 fps = 0.05s)
                 time.sleep(0.05)
             
             print(f"[STREAM] Stream RTP terminado para {origin_id}.")
 
-        except FileNotFoundError:
-            print(f"[ERRO] Ficheiro de vídeo '{video_file}' não encontrado.")
         except Exception as e:
             print(f"[ERRO] Falha no streaming RTP: {e}")
 
@@ -366,7 +358,7 @@ class Node:
                 self.ready_after_welcome = True
 
                 # Verificar se este nó é folha
-                if len(msg_obj.neighbors) == 1:
+                if len(msg_obj.neighbors) == 1 && self.my_role != "server":
                     print(f"[Node] Sou folha após o WELCOME — posso entrar em perigo quando HELLO estabelecer.")
                     self.pending_danger = True
 
@@ -572,12 +564,6 @@ class Node:
                     print(f"    -> [AVISO] Não identifiquei remetente do ACTIVATE. FWD table não foi atualizada.")
                     # Se não sabemos quem pediu, não podemos continuar a cadeia.
                     return
-
-                if self.node_id == origin:
-                    print(f"    -> Sou a origem. A iniciar stream.")
-                    stream_thread = threading.Thread(target=self.start_rtp_stream, args=(origin,))
-                    stream_thread.start()
-                    return # O fluxo de controlo para aqui para o servidor.
                 
                 next_hop = None
                 best_route = self.get_best_route(origin)
