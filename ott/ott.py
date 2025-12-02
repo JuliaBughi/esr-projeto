@@ -9,8 +9,6 @@ from transport.udp_transport import UDPTransport
 from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
-
-# imports para stream
 from streaming.VideoStream import VideoStream
 from streaming.RtpPacket import RtpPacket
 from tkinter import Tk, Label
@@ -19,7 +17,7 @@ import io
 import base64
 
 MY_PORT = 5000
-
+MY_OTHER_PORT = 5001
 
 class Node:
     def __init__(self, my_ip, bootstrapper_addr, my_role):
@@ -29,11 +27,12 @@ class Node:
         self.node_id = f"{my_ip}:{MY_PORT}"
         self.bootstrapper_addr = bootstrapper_addr
         self.lock = threading.Lock()
-        self.transport = TCPTransport(my_ip, MY_PORT, self.handle_message)
+        self.tcp_transport = TCPTransport(my_ip, MY_PORT, self.handle_message)
 
-        self.overlay_mapping = {}  # id do overlay -> {"host": ip, "port": port}
+        # id do overlay -> {"host": ip, "port": port}
+        self.overlay_mapping = {}  
 
-        # Tabela de forwarding: origin -> set(dos vizinhos que dependem de mim para chegar à origem)
+        # origin -> set(dos vizinhos que dependem de mim para chegar à origem)
         self.forwarding_table = {}
 
         # node_id -> {"ip": ip, "port": port, "socket": sock, "established": bool}
@@ -45,7 +44,6 @@ class Node:
         # socket -> node_id mapping (para identificar o remetente dos pacotes)
         self.sock_to_id = {}
 
-        # Track best metric seen recently per origin (to help cortar repropagação/ciclos)
         # origin -> {"metric": best_metric, "timestamp": last_seen}
         self.recent_best_metric = {}
 
@@ -54,12 +52,11 @@ class Node:
         self.ready_after_welcome = False
         self.pending_danger = False
 
-        # PARTE UDP
-        self.udp_port = MY_PORT + 1
-        self.udp_transport = UDPTransport(self.my_ip, self.udp_port, self.handle_stream_data)
+        self.udp_transport = UDPTransport(self.my_ip, MY_OTHER_PORT, self.handle_stream_data)
 
         self.video_player = None
         self.tk_root = None
+
         if self.my_role == "client":
             try:
                 # Inicia a parte gráfica numa thread separada para não bloquear a rede
@@ -81,8 +78,8 @@ class Node:
             pass
 
     def start(self):
-        self.transport.start_listening() # iniciar o tcp
-        self.udp_transport.start_listening() # iniciar o udp
+        self.tcp_transport.start_listening() 
+        self.udp_transport.start_listening() 
         time.sleep(0.5)
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
@@ -93,21 +90,16 @@ class Node:
             threading.Thread(target=self.start_rtp_stream, args=(self.node_id,), daemon=True).start()
 
     def bootstrap(self):
-        sock = self.transport.connect(*self.bootstrapper_addr)
+        sock = self.tcp_transport.connect(*self.bootstrapper_addr)
         if not sock:
             print("[Bootstrapper] Falha ao conectar")
             return
-        # Quando conectamos ao bootstrapper, não conhecemos ainda o node_id dele — mas enviamos Join
         physical_id = f"{self.my_ip}:{MY_PORT}"
         TCPTransport.send(sock, JoinMessage(physical_id).to_json().encode())
-        # registamos temporariamente o socket (sem node_id conhecido)
         self.sock_to_id[sock] = None
         time.sleep(0.5)
 
     def periodic_flood(self, interval=10):
-        """
-        Server periodically floods the network announcing flows.
-        """
         while True:
             start_jump = 0
             with self.lock:
@@ -159,7 +151,6 @@ class Node:
 
                     print(f"[Node] {neighbor_id} depende de mim para {origin} → recomendar avô {avo_id}")
 
-            # Decide a mensagem final
             if depends:
                 msg = LeaveMessage(self.node_id, recommended_target)
                 print(f"[Node] {neighbor_id} depende de mim — enviando recommended.")
@@ -167,7 +158,6 @@ class Node:
                 msg = LeaveMessage(self.node_id, None)
                 print(f"[Node] {neighbor_id} NÃO depende de mim — leave simples.")
 
-            # Envia e fecha
             try:
                 TCPTransport.send(info["socket"], msg.to_json().encode())
             except:
@@ -180,20 +170,14 @@ class Node:
 
             del self.neighbors[neighbor_id]
 
-        # limpa tudo
         self.routing_table.clear()
         self.forwarding_table.clear()
         self.sock_to_id.clear()
 
-        self.transport.stop_listening()
+        self.tcp_transport.stop_listening()
         print(f"[Node] {self.node_id} saiu da rede com sucesso.")
 
     def update_route(self, route_entry):
-        """
-        Atualiza a routing_table de forma atómica:
-        - se já existir uma rota da mesma origin vinda do mesmo antecessor, atualiza timestamp/metric/state
-        - se existir outra rota para origin com pior métrica, substitui-a (ou mantém ambas se vier de antecessores diferentes)
-        """
         with self.lock:
             origin = route_entry["origin"]
             sender = route_entry["sender"]
@@ -232,10 +216,6 @@ class Node:
         return latency + loss*10 - bandwidth_val/10
 
     def start_rtp_stream(self, origin_id, video_file="movie.Mjpeg"):
-        """
-        Inicia o streaming de vídeo. Lê frames, cria pacotes RTP binários
-        e envia-os diretamente via UDP para os dependentes.
-        """
         if self.my_role != "server" or self.node_id != origin_id:
             return
 
@@ -267,7 +247,7 @@ class Node:
                     if dependent_id in self.neighbors:
                         n_info = self.neighbors[dependent_id]
                         print(f"    -> Enviando frame RTP {frame_number} ({len(packet_bytes)} bytes) para {dependent_id}")
-                        self.udp_transport.send(n_info["ip"], self.udp_port, packet_bytes)
+                        self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes)
 
                 # Controla a taxa de frames (20 fps = 0.05s)
                 time.sleep(0.05)
@@ -278,7 +258,6 @@ class Node:
             print(f"[ERRO] Falha no streaming RTP: {e}")
 
     def handle_stream_data(self, data: bytes, sender_addr: tuple):
-        """Lida com pacotes RTP binários recebidos via UDP."""
         try:
             if self.my_role == "client" and self.video_player:
                 rtp_packet = RtpPacket()
@@ -303,13 +282,12 @@ class Node:
             for dependent_id in all_dependents:
                 if dependent_id in self.neighbors:
                     n_info = self.neighbors[dependent_id]
-                    self.udp_transport.send(n_info["ip"], self.udp_port, data)
+                    self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, data)
                 
         except Exception as e:
             pass
 
     def get_grandparent(self):
-        # este nó tem uma rota ativa para a origem?
         for origin in self.forwarding_table:
             best = self.get_best_route(origin)
             if best:
@@ -321,7 +299,6 @@ class Node:
     def catastrophic_warning(self):
         print(f"[{self.node_id}] Estou em perigo! A avisar o meu vizinho principal...")
 
-        # Encontrar next-hop para origem (quem me deu a rota)
         for origin, dependents in self.forwarding_table.items():
             best = self.get_best_route(origin)
             if best and best["sender"] in self.neighbors:
@@ -336,28 +313,24 @@ class Node:
 
 
     def handle_message(self, sock, data):
-        """Callback para mensagens recebidas"""
         if not data:
             return
 
         try:
             msg_obj = parse_message(data.decode())
 
-            # When we have messages that include node_id (Hello/HelloBack), we can map sock->node_id
             if isinstance(msg_obj, WelcomeMessage):
                 self.node_id = msg_obj.node_id
                 for n in msg_obj.neighbors:
                     n_id = n["id"]
                     self.overlay_mapping[n_id] = {"host": n["host"], "port": n["port"]}
-                    # conecta se quiser já
-                    peer_sock = self.transport.connect(n["host"], n["port"])
+                    peer_sock = self.tcp_transport.connect(n["host"], n["port"])
                     if peer_sock:
                         self.neighbors[n_id] = {"ip": n["host"], "port": n["port"], "socket": peer_sock, "established": False}
                         self.sock_to_id[peer_sock] = n_id
                         TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
                 self.ready_after_welcome = True
 
-                # Verificar se este nó é folha
                 if len(msg_obj.neighbors) == 1 and self.my_role != "server":
                     print(f"[Node] Sou folha após o WELCOME — posso entrar em perigo quando HELLO estabelecer.")
                     self.pending_danger = True
@@ -398,6 +371,7 @@ class Node:
                     print(f"[Node] Handshake com {sender_id} concluído e sou folha — enviando catastrophic_warning()")
                     self.pending_danger = False
                     self.catastrophic_warning()
+
 
             elif isinstance(msg_obj, HelloBackMessage):
                 sender_id = msg_obj.node_id
@@ -463,7 +437,7 @@ class Node:
                         # Verificar se rota para o origin agora está sem next-hop
                         if still_needs_route and rec_id not in self.neighbors and rec_id != self.node_id:
                             print(f"[Node] Recomendação válida — tentando conectar ao avô {rec_id}...")
-                            peer_sock = self.transport.connect(rec["ip"], rec["port"])
+                            peer_sock = self.tcp_transport.connect(rec["ip"], rec["port"])
                             if peer_sock:
                                 self.neighbors[rec_id] = {
                                     "ip": rec["ip"],
@@ -581,6 +555,7 @@ class Node:
                 else:
                     print(f"    -> Não reencaminhei ACTIVATE. Motivo: Não tenho uma rota válida ou o antecessor já não é meu vizinho.")
 
+
             elif isinstance(msg_obj, DangerMessage):
                 danger_node = msg_obj.node_id
                 print(f"[{self.node_id}] Recebi DANGER de {danger_node}")
@@ -606,6 +581,7 @@ class Node:
                     )
                 except:
                     print(f"[{self.node_id}] Falha ao enviar safe_option para {danger_node}")
+
 
             elif isinstance(msg_obj, SafeOptionMessage):
                 self.safe_option = msg_obj.safe
