@@ -358,7 +358,7 @@ class Node:
                 self.ready_after_welcome = True
 
                 # Verificar se este nó é folha
-                if len(msg_obj.neighbors) == 1 && self.my_role != "server":
+                if len(msg_obj.neighbors) == 1 and self.my_role != "server":
                     print(f"[Node] Sou folha após o WELCOME — posso entrar em perigo quando HELLO estabelecer.")
                     self.pending_danger = True
 
