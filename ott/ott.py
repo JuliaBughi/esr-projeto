@@ -469,7 +469,7 @@ class Node:
                                     "established": False
                                 }
                                 self.sock_to_id[peer_sock] = rec_id
-                                self.forwarding_table.setdefault(origin, []).append(rec_id)
+                                self.forwarding_table.setdefault(origin, set()).add(rec_id)
 
                             TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
                             print(f"[LEAVE] Conectado ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
