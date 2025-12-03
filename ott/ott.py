@@ -113,61 +113,80 @@ class Node:
                     print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
             time.sleep(interval)
 
-
     def graceful_leave(self):
-        print(f"[Node] {self.node_id} iniciando graceful leave...")
 
-        with self.lock:
-            neighbors_items = list(self.neighbors.items())
+        print(f"[LEAVE] Iniciando graceful leave do nó {self.node_id}")
 
-        for neighbor_id, info in neighbors_items:
-            # Verifica se é filho
-            is_child = any(neighbor_id in deps for deps in self.forwarding_table.values())
+        # snapshot para evitar mutações enquanto iteramos
+        neighbors_snapshot = list(self.neighbors.keys())
+
+        for neighbor_id in neighbors_snapshot:
+            print(f"\n[LEAVE] Processando neighbor {neighbor_id}")
+
+            # 1. Determinar todos os origins para os quais o neighbor DEPENDE de mim
+            child_origins = []
+            for origin, next_hops in self.forwarding_table.items():
+                if neighbor_id in next_hops:
+                    child_origins.append(origin)
+
+            print(f"[LEAVE] {neighbor_id} depende de mim para origins: {child_origins}")
+
+            # 2. Encontrar o avô (meu pai no routing tree) para cada origin
             recommended_target = None
 
-            if is_child:
-                # Encontrar o "avô" real (melhor rota alternativa)
-                for origin, deps in self.forwarding_table.items():
-                    if neighbor_id not in deps:
-                        continue
-                    best_route = self.get_best_route(origin)
-                    if best_route and best_route["sender"] != self.node_id:
-                        avo_id = best_route["sender"]
-                        avo_info = self.neighbors.get(avo_id)
-                        if avo_info:
-                            recommended_target = {
-                                "id": avo_id,
-                                "ip": avo_info["ip"],
-                                "port": avo_info["port"]
-                            }
-                    break
+            for origin in child_origins:
+                best = self.get_best_route(origin)
+                if not best:
+                    print(f"[LEAVE] Sem best route para origin {origin}")
+                    continue
 
-            # Decide mensagem
-            msg = LeaveMessage(self.node_id, recommended_target)
+                parent_id = best["sender"]
+
+                # Se o meu pai sou eu próprio, não existe "avô"
+                if parent_id == self.node_id:
+                    print(f"[LEAVE] Para origin {origin}, eu sou root. Não há avô para recomendar.")
+                    continue
+
+                info = self.overlay_mapping[parent_id]
+                recommended_target = {
+                    "id": parent_id,
+                    "ip": info["host"],
+                    "port": info["port"]
+                }
+
+                print(f"[LEAVE] Recomendando ao filho {neighbor_id} ligar ao avô {parent_id} "
+                    f"({info['host']}:{info['port']})")
+                break
+
+            # 3. Construir mensagem LEAVE
+            msg = LeaveMessage(
+                node_id=self.node_id,
+                recommended=recommended_target
+            )
+
+            # 4. Enviar a mensagem ao neighbor
             try:
-                TCPTransport.send(info["socket"], msg.to_json().encode())
-                print(f"[Node] Enviando LEAVE para {neighbor_id} {'com avô recomendado ' + recommended_target['id'] if recommended_target else ''}")
+                TCPTransport.send(
+                    self.neighbors[neighbor_id]["socket"],
+                    msg.to_json().encode()
+                )
+                if recommended_target:
+                    print(f"[LEAVE] LEAVE enviado a {neighbor_id} com recomendação.")
+                else:
+                    print(f"[LEAVE] LEAVE enviado a {neighbor_id} (simples).")
             except Exception as e:
-                print(f"[Node] Falha ao enviar LEAVE para {neighbor_id}: {e}")
+                print(f"[LEAVE] Erro ao enviar LEAVE para {neighbor_id}: {e}")
 
-            try:
-                info["socket"].close()
-            except:
-                pass
+        # 5. Finalmente, fechar servidor e parar o loop principal
+        print("[LEAVE] Removendo nó da overlay e fechando conexões.")
+        self.running = False
 
-            # Remove vizinho
-            with self.lock:
-                if neighbor_id in self.neighbors:
-                    del self.neighbors[neighbor_id]
+        # Remover as próprias referências
+        self.neighbors.clear()
+        self.forwarding_table.clear()
+        self.routing_table.clear()
 
-        # Limpeza geral
-        with self.lock:
-            self.routing_table.clear()
-            self.forwarding_table.clear()
-            self.sock_to_id.clear()
-
-        self.tcp_transport.stop_listening()
-        print(f"[Node] {self.node_id} saiu da rede com sucesso.")
+        print("[LEAVE] Finalizado.")
 
 
     def update_route(self, route_entry):
@@ -390,63 +409,72 @@ class Node:
             elif isinstance(msg_obj, LeaveMessage):
                 sender_id = msg_obj.node_id
                 rec = msg_obj.recommended
-                print(f"[Node] Recebi LEAVE de {sender_id}")
+
+                print(f"[{self.node_id}] Recebi LEAVE de {sender_id} (recomendação: {rec})")
 
                 with self.lock:
-                    # 1. Remover o vizinho
+                    affected_origins = [
+                        route["origin"]
+                        for route in self.routing_table
+                        if route["sender"] == sender_id
+                    ]
+                    print(f"[LEAVE] {sender_id} era responsável pelos origins: {affected_origins}")
+
+                with self.lock:
+                    # Fechar socket do sender
                     if sender_id in self.neighbors:
                         try:
                             self.neighbors[sender_id]["socket"].close()
                         except:
                             pass
                         del self.neighbors[sender_id]
-                        print(f"[Node] Removi {sender_id} dos neighbors.")
+                        print(f"[LEAVE] Removido {sender_id} dos neighbors")
 
-                    # 2. Remover rotas que passam pelo sender
+                    # Limpar rotas do sender
                     before = len(self.routing_table)
                     self.routing_table = [r for r in self.routing_table if r["sender"] != sender_id]
                     after = len(self.routing_table)
                     if before != after:
-                        print(f"[Node] Limpei {before - after} rotas que dependiam de {sender_id}")
+                        print(f"[LEAVE] Removidas {before - after} rotas que dependiam de {sender_id}")
 
-                    # 3. Remover dependentes da forwarding_table
-                    for origin, deps in self.forwarding_table.items():
+                    # Remover sender da forwarding_table
+                    for origin, deps in list(self.forwarding_table.items()):
                         if sender_id in deps:
                             deps.remove(sender_id)
-                            print(f"[Node] Removi {sender_id} de forwarding_table[{origin}]")
+                            print(f"[LEAVE] Removido {sender_id} de forwarding_table[{origin}]")
 
-                    # 4. Remover best_route se dependia dele
-                    for origin, best in list(self.recent_best_metric.items()):
-                        if best["sender"] == sender_id:
-                            print(f"[Node] best_route para {origin} era via {sender_id}. Invalidando.")
-                            del self.recent_best_metric[origin]
+                # Se houver recomendação
+                if rec:
+                    rec_id = rec.get("id")
+                    rec_ip = rec.get("ip")
+                    rec_port = rec.get("port")
 
-                # 5. Reconexão ao nó recomendado (avô)
-                if rec is not None:
-                    rec_id = rec["id"]
+                    for origin in affected_origins:
+                        # Verifica se há rotas alternativas para este origin
+                        alt = self.get_best_route(origin)
+                        if alt:
+                            with self.lock:
+                                self.forwarding_table[origin] = [alt["sender"]]
+                            print(f"[LEAVE] Usando rota alternativa para origin {origin} via {alt['sender']}")
+                            continue
 
-                    # Só reconecta se ainda precisar de rota e não estiver conectado
-                    with self.lock:
-                        still_needs_route = any(r["sender"] == sender_id for r in self.routing_table)
-
-                    if still_needs_route and rec_id not in self.neighbors and rec_id != self.node_id:
-                        print(f"[Node] Tentando conectar ao avô recomendado {rec_id}...")
-                        peer_sock = self.tcp_transport.connect(rec["ip"], rec["port"])
+                        # Sem rota alternativa → conectar ao recomendado diretamente (IP/Port do LEAVE)
+                        peer_sock = self.tcp_transport.connect(rec_ip, rec_port)
                         if peer_sock:
                             with self.lock:
                                 self.neighbors[rec_id] = {
-                                    "ip": rec["ip"],
-                                    "port": int(rec["port"]),
+                                    "ip": rec_ip,
+                                    "port": rec_port,
                                     "socket": peer_sock,
                                     "established": False
                                 }
                                 self.sock_to_id[peer_sock] = rec_id
+                                self.forwarding_table.setdefault(origin, []).append(rec_id)
+
                             TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
-                            print(f"[Node] Conectado ao avô recomendado {rec_id}")
+                            print(f"[LEAVE] Conectado ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
                         else:
-                            print(f"[Node] Falha ao conectar ao recomendado {rec_id}")
-                    else:
-                        print(f"[Node] Ignorando recomendação — rota já resolvida ou rec já conectado.")
+                            print(f"[LEAVE] Falha ao conectar ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
 
 
             elif isinstance(msg_obj, FloodMessage):
