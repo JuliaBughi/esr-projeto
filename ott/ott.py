@@ -242,7 +242,7 @@ class Node:
             while True:
                 # 1. Obter o próximo frame do ficheiro de vídeo
                 frame_data = video_stream.nextFrame()
-                
+
                 if not frame_data:
                     video_stream = VideoStream(video_file)  # reinicia o video
                     continue
@@ -416,69 +416,116 @@ class Node:
 
                 print(f"[{self.node_id}] Recebi LEAVE de {sender_id} (recomendação: {rec})")
 
-                with self.lock:
-                    affected_origins = [
-                        route["origin"]
-                        for route in self.routing_table
-                        if route["sender"] == sender_id
-                    ]
-                    print(f"[LEAVE] {sender_id} era responsável pelos origins: {affected_origins}")
+                 # with self.lock:
+                #     affected_origins = [
+                #         route["origin"]
+                #         for route in self.routing_table
+                #         if route["sender"] == sender_id
+                #     ]
+                #     print(f"[LEAVE] {sender_id} era responsável pelos origins: {affected_origins}")
+
+                # with self.lock:
+                #     # Fechar socket do sender
+                #     if sender_id in self.neighbors:
+                #         try:
+                #             self.neighbors[sender_id]["socket"].close()
+                #         except:
+                #             pass
+                #         del self.neighbors[sender_id]
+                #         print(f"[LEAVE] Removido {sender_id} dos neighbors")
+
+                #     # Limpar rotas do sender
+                #     before = len(self.routing_table)
+                #     self.routing_table = [r for r in self.routing_table if r["sender"] != sender_id]
+                #     after = len(self.routing_table)
+                #     if before != after:
+                #         print(f"[LEAVE] Removidas {before - after} rotas que dependiam de {sender_id}")
+
+                #     # Remover sender da forwarding_table
+                #     for origin, deps in list(self.forwarding_table.items()):
+                #         if sender_id in deps:
+                #             deps.remove(sender_id)
+                #             print(f"[LEAVE] Removido {sender_id} de forwarding_table[{origin}]")
+
+                affected_origins = set()
 
                 with self.lock:
-                    # Fechar socket do sender
+                    # Ver quais rotas usavam este vizinho como Next Hop
+                    # Nota: na vossa routing table, 'sender' é o vizinho que nos deu a rota (o nosso pai)
+                    for route in self.routing_table:
+                        if route["sender"] == sender_id:
+                            affected_origins.add(route["origin"])
+
+                    # 2. Limpar o vizinho e as rotas dele
                     if sender_id in self.neighbors:
                         try:
                             self.neighbors[sender_id]["socket"].close()
-                        except:
-                            pass
+                        except: pass
                         del self.neighbors[sender_id]
-                        print(f"[LEAVE] Removido {sender_id} dos neighbors")
-
-                    # Limpar rotas do sender
-                    before = len(self.routing_table)
+                    
+                    # Remover rotas vindas deste vizinho
                     self.routing_table = [r for r in self.routing_table if r["sender"] != sender_id]
-                    after = len(self.routing_table)
-                    if before != after:
-                        print(f"[LEAVE] Removidas {before - after} rotas que dependiam de {sender_id}")
-
-                    # Remover sender da forwarding_table
-                    for origin, deps in list(self.forwarding_table.items()):
+                    
+                    # Limpar forwarding table (se ele era meu dependente)
+                    for origin, deps in self.forwarding_table.items():
                         if sender_id in deps:
                             deps.remove(sender_id)
-                            print(f"[LEAVE] Removido {sender_id} de forwarding_table[{origin}]")
 
-                # Se houver recomendação
-                if rec:
-                    rec_id = rec.get("id")
-                    rec_ip = rec.get("ip")
-                    rec_port = rec.get("port")
+                # 3. Tentar recuperar CADA origem afetada
+                for origin in affected_origins:
+                    # Verificar se sobrou alguma rota na tabela
+                    best = self.get_best_route(origin)
+                    
+                    if best:
+                        # CENÁRIO INTELIGENTE: Temos uma rota alternativa (ex: via E)
+                        new_parent = best["sender"]
+                        print(f"[RECOVERY] Rota alternativa encontrada para {origin} via {new_parent}. Ativando...")
+                        
+                        # Enviar ACTIVATE para o novo pai
+                        if new_parent in self.neighbors:
+                            try:
+                                TCPTransport.send(
+                                    self.neighbors[new_parent]["socket"], 
+                                    ActivateMessage(origin, self.node_id).to_json().encode()
+                                )
+                            except Exception as e:
+                                print(f"[RECOVERY] Falha ao ativar rota alternativa: {e}")
 
-                    for origin in affected_origins:
-                        # Verifica se há rotas alternativas para este origin
-                        alt = self.get_best_route(origin)
-                        if alt:
-                            with self.lock:
-                                self.forwarding_table[origin] = [alt["sender"]]
-                            print(f"[LEAVE] Usando rota alternativa para origin {origin} via {alt['sender']}")
-                            continue
+                    
+                    
+                    elif rec:
+                        rec_id = rec.get("id")
+                        rec_ip = rec.get("ip")
+                        rec_port = rec.get("port")
 
-                        # Sem rota alternativa → conectar ao recomendado diretamente (IP/Port do LEAVE)
-                        peer_sock = self.tcp_transport.connect(rec_ip, rec_port)
-                        if peer_sock:
-                            with self.lock:
-                                self.neighbors[rec_id] = {
-                                    "ip": rec_ip,
-                                    "port": rec_port,
-                                    "socket": peer_sock,
-                                    "established": False
-                                }
-                                self.sock_to_id[peer_sock] = rec_id
-                                self.forwarding_table.setdefault(origin, set()).add(rec_id)
+                        for origin in affected_origins:
+                            # Verifica se há rotas alternativas para este origin
+                            alt = self.get_best_route(origin)
+                            if alt:
+                                with self.lock:
+                                    self.forwarding_table[origin] = [alt["sender"]]
+                                print(f"[LEAVE] Usando rota alternativa para origin {origin} via {alt['sender']}")
+                                continue
 
-                            TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
-                            print(f"[LEAVE] Conectado ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
-                        else:
-                            print(f"[LEAVE] Falha ao conectar ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
+                            # Sem rota alternativa → conectar ao recomendado diretamente (IP/Port do LEAVE)
+                            peer_sock = self.tcp_transport.connect(rec_ip, rec_port)
+                            if peer_sock:
+                                with self.lock:
+                                    self.neighbors[rec_id] = {
+                                        "ip": rec_ip,
+                                        "port": rec_port,
+                                        "socket": peer_sock,
+                                        "established": False
+                                    }
+                                    self.sock_to_id[peer_sock] = rec_id
+                                    self.forwarding_table.setdefault(origin, set()).add(rec_id)
+
+                                TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
+                                print(f"[LEAVE] Conectado ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
+                            else:
+                                print(f"[LEAVE] Falha ao conectar ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
+
+                    
 
 
             elif isinstance(msg_obj, FloodMessage):
