@@ -242,20 +242,24 @@ class Node:
             while True:
                 # 1. Obter o próximo frame do ficheiro de vídeo
                 frame_data = video_stream.nextFrame()
+                
                 if not frame_data:
                     video_stream = VideoStream(video_file)  # reinicia o video
                     continue
 
                 frame_number = video_stream.frameNbr()
-                # 2. Criar o pacote RTP binário
-                rtp_packet = RtpPacket()
-                rtp_packet.encode(version=2, padding=0, extension=0, cc=0, seqnum=frame_number, 
-                                  marker=0, pt=26, ssrc=0, payload=frame_data)
-                packet_bytes = rtp_packet.getPacket() # Estes são os bytes que vamos enviar
 
                 with self.lock:
                     # Verifica se há clientes ativos (dependentes diretos)
                     dependents = self.forwarding_table.get(origin_id, set())
+
+                if dependents:
+                    # Criar o pacote RTP binário apenas se necessário
+                    rtp_packet = RtpPacket()
+                    rtp_packet.encode(version=2, padding=0, extension=0, cc=0, seqnum=frame_number, 
+                                      marker=0, pt=26, ssrc=0, payload=frame_data)
+                    packet_bytes = rtp_packet.getPacket()
+
 
                 # 3. Enviar os bytes do pacote RTP DIRETAMENTE via UDP para todos os dependentes
                 for dependent_id in dependents:
