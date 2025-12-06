@@ -113,6 +113,14 @@ class SafeOptionMessage(Message):
         self.node_id = node_id
         self.safe = safe
   
+# ----------------------------
+# Mensagem HEARTBEAT (monitorar)
+# ----------------------------
+class HeartBeatActiveMessage(Message):
+    TYPE = "HB_ACTIVE"
 
+    def __init__(self, node_id: str, timestamp: float):
+        self.node_id = node_id
+        self.timestamp = timestamp
 
 

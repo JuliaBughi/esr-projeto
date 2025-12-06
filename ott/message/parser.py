@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, FloodMessage, ActivateMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, FloodMessage, ActivateMessage, HeartBeatActiveMessage
 
 def parse_message(json_str: str) -> Message:
     """
@@ -39,6 +39,12 @@ def parse_message(json_str: str) -> Message:
         return SafeOptionMessage(
             node_id=data["node_id"],
             safe=data["safe"]
+        )
+
+    elif msg_type == "HB_ACTIVE":
+        return HeartBeatActiveMessage(
+            node_id=data["node_id"],
+            timestamp=data["timestamp"]
         )
 
     else:

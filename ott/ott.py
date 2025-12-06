@@ -4,9 +4,10 @@ import time
 import argparse
 import threading
 import math
+import json
 from transport.tcp_transport import TCPTransport
 from transport.udp_transport import UDPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
 from streaming.VideoStream import VideoStream
@@ -60,6 +61,9 @@ class Node:
         self.video_player = None
         self.tk_root = None
 
+        self.last_seen = {}   # node_id -> last heartbeat timestamp
+
+
         if self.my_role == "client":
             try:
                 # Inicia a parte gráfica numa thread separada para não bloquear a rede
@@ -80,7 +84,10 @@ class Node:
         self.bootstrap()
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
-      
+
+        threading.Thread(target=self.start_maintenance_loop, daemon=True).start()
+        threading.Thread(target=self.start_active_hb_sender_loop, daemon=True).start()
+
         if self.my_role == "server":
             threading.Thread(target=self.periodic_flood, daemon=True).start()
             threading.Thread(target=self.start_rtp_stream, args=(self.node_id,), daemon=True).start()
@@ -96,7 +103,126 @@ class Node:
         self.sock_to_id[sock] = None
         time.sleep(0.5)
 
+    def start_active_hb_sender_loop(self):
+        while True:
+            time.sleep(1.0) # Send explicit HB every 1 second
+            
+            try:
+                # Primeiro: identificar vizinhos e sucessores
+                with self.lock:
+                    all_neighbors = set(self.neighbors.keys())
 
+                    # Sucessores = nós a quem EU envio vídeo
+                    active_successors = set()
+                    for route in self.routing_table:
+                        if route["state"] == "ACTIVE" and route["sender"] == self.node_id:
+                            active_successors.add(route["destination"])
+
+                    # Enviar HB para todos exceto os sucessores
+                    neighbors_to_ping = all_neighbors - active_successors
+
+                if not neighbors_to_ping:
+                    continue
+                
+                # Send the HB
+                # Precisamos pegar os sockets com cuidado
+                sockets_to_send = []
+                with self.lock:
+                    for neighbor_id in neighbors_to_ping:
+                        if neighbor_id in self.neighbors:
+                            sock = self.neighbors[neighbor_id]["socket"]
+                            sockets_to_send.append((neighbor_id, sock))
+
+                for nid, sock in sockets_to_send:
+                    try:
+                        TCPTransport.send(sock, HeartBeatActiveMessage(node_id=self.node_id, timestamp=time.time()).to_json().encode())
+                    except Exception as e:
+                        print(f"[HB] Falha ao enviar para {nid}: {e}")
+
+            except Exception as e:
+                print(f"[HB LOOP ERROR] {e}")
+
+    def start_maintenance_loop(self):
+        while True:
+            time.sleep(1)
+            timeout_limit = 10.0
+            now = time.time()
+            
+            # Monitor Predecessors
+            predecessor_to_origin = {}
+            with self.lock:
+                for route in self.routing_table:
+                    if route["state"] == "ACTIVE" and route["sender"] != self.node_id:
+                        predecessor_to_origin[route["sender"]] = route["origin"]
+            
+            for parent_id, origin in predecessor_to_origin.items():
+                last_hb = self.last_seen.get(parent_id)
+                if last_hb is None: self.last_seen[parent_id] = now # Assume vivo no inicio
+
+                if last_hb and (now - last_hb > timeout_limit):
+                    print(f"[{self.node_id}] FAILURE UPSTREAM: Predecessor {parent_id} timed out.")
+                    self.handle_predecessor_failure(parent_id, origin)
+
+            # Monitor Dependents
+            dependents_to_check = set()
+            with self.lock:
+                for origin, dependents in self.forwarding_table.items():
+                    dependents_to_check.update(dependents)
+            
+            for dependent_id in dependents_to_check:
+                last_hb = self.last_seen.get(dependent_id)
+                if last_hb is None: self.last_seen[dependent_id] = now
+
+                if last_hb and (now - last_hb > timeout_limit):
+                    print(f"[{self.node_id}] FAILURE DOWNSTREAM: Dependent {dependent_id} timed out.")
+                    self.handle_dependent_failure(dependent_id)
+
+    def handle_predecessor_failure(self, failed_predecessor_id, origin_id):
+        with self.lock:
+            # Remove todas as rotas do predecessor falhado
+            self.routing_table = [r for r in self.routing_table if r["sender"] != failed_predecessor_id]
+            if failed_predecessor_id in self.last_seen:
+                del self.last_seen[failed_predecessor_id]
+
+            # Tenta encontrar a melhor rota alternativa existente
+            best = self.get_best_route(origin_id)
+            if best:
+                new_parent = best["sender"]
+
+                # Atualiza o estado local para ACTIVE
+                best["state"] = "ACTIVE"
+                print(f"[RECOVERY] Predecessor {failed_predecessor_id} falhou. Ativando rota alternativa para {origin_id} via {new_parent}.")
+
+                # Envia ACTIVATE para a origem usando o socket existente
+                if new_parent in self.neighbors:
+                    try:
+                        TCPTransport.send(
+                            self.neighbors[new_parent]["socket"],
+                            ActivateMessage(origin_id, self.node_id).to_json().encode()
+                        )
+                        print(f"[RECOVERY] ACTIVATE enviado para {origin_id} via {new_parent}.")
+                    except Exception as e:
+                        print(f"[RECOVERY] Falha ao enviar ACTIVATE para {origin_id} via {new_parent}: {e}")
+                else:
+                    print(f"[RECOVERY] Não tenho socket válido para {new_parent}!")
+
+            else:
+                print(f"[RECOVERY] Predecessor {failed_predecessor_id} falhou e não há rotas alternativas conhecidas para {origin_id}.")
+
+
+
+    def handle_dependent_failure(self, failed_dependent_id):
+        with self.lock:
+            for origin, dependents in list(self.forwarding_table.items()):
+                if failed_dependent_id in dependents:
+                    dependents.remove(failed_dependent_id)
+            
+            if failed_dependent_id in self.neighbors:
+                try: self.neighbors[failed_dependent_id]["socket"].close()
+                except: pass
+                del self.neighbors[failed_dependent_id]
+            if failed_dependent_id in self.last_seen: del self.last_seen[failed_dependent_id]
+            
     def periodic_flood(self, interval=10):
         while True:
             start_jump = 0
@@ -261,12 +387,13 @@ class Node:
                     packet_bytes = rtp_packet.getPacket()
 
 
+
                 # 3. Enviar os bytes do pacote RTP DIRETAMENTE via UDP para todos os dependentes
                 for dependent_id in dependents:
                     if dependent_id in self.neighbors:
                         n_info = self.neighbors[dependent_id]
                         print(f"    -> Enviando frame RTP {frame_number} ({len(packet_bytes)} bytes) para {dependent_id}")
-                        self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes)
+                        self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes, piggyback_header={"node": self.node_id,"timestamp": time.time()})
 
                 # Controla a taxa de frames (20 fps = 0.05s)
                 time.sleep(0.05)
@@ -277,35 +404,44 @@ class Node:
             print(f"[ERRO] Falha no streaming RTP: {e}")
 
 
-    def handle_stream_data(self, data: bytes, sender_addr: tuple):
-        try:
-            if self.my_role == "client" and self.video_player:
-                rtp_packet = RtpPacket()
-                rtp_packet.decode(data)
-                frame_payload = rtp_packet.getPayload()
-                if frame_payload:                   
-                    self.video_player.update_frame(frame_payload)
-                return
+    def handle_stream_data(self, data: bytes, sender_addr: tuple, piggyback_header: dict):
+            try:
+                if piggyback_header:
+                    sender_node_id = piggyback_header.get("node")
+                    
+                    if sender_node_id:
+                        self.last_seen[sender_node_id] = time.time()
+                        #print(f"[HB] got heartbeat from {sender_node_id}") # para ver se esta a dar
 
-            all_dependents = set()
-            with self.lock:
-                for origin in self.forwarding_table:
-                    all_dependents.update(self.forwarding_table[origin])
+                if not piggyback_header:
+                    piggyback_header = {"node": self.node_id, "ts": time.time()}
 
-            if not all_dependents:
-                # Se ninguém depende de nós para NADA, descartamos o pacote.
-                # Podemos adicionar um log para ver se isto acontece
-                print(f"[{self.node_id}] Descartei pacote UDP, FWD table vazia.")
-                return
+                if self.my_role == "client" and self.video_player:
+                    rtp_packet = RtpPacket()
+                    rtp_packet.decode(data)
+                    frame_payload = rtp_packet.getPayload()
 
-            # Reencaminha os bytes do pacote RTP original para todos os dependentes
-            for dependent_id in all_dependents:
-                if dependent_id in self.neighbors:
-                    n_info = self.neighbors[dependent_id]
-                    self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, data)
-                
-        except Exception as e:
-            pass
+                    if frame_payload:
+                        self.video_player.update_frame(frame_payload)
+                    return
+
+                all_dependents = set()
+                with self.lock:
+                    for origin in self.forwarding_table:
+                        all_dependents.update(self.forwarding_table[origin])
+
+                if not all_dependents:
+                    print(f"[{self.node_id}] Dropped packet, empty FWD table.")
+                    return
+
+                for dependent_id in all_dependents:
+                    if dependent_id in self.neighbors:
+                        n_info = self.neighbors[dependent_id]
+                        self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, data, piggyback_header)
+
+            except Exception as e:
+                print(f"[{self.node_id}] Error in handle_stream_data: {e}")
+
 
 
     def get_grandparent(self):
@@ -361,6 +497,8 @@ class Node:
             elif isinstance(msg_obj, HelloMessage):
                 sender_id = msg_obj.node_id
                 print(f"[Node] Recebi HELLO de {sender_id}")
+
+                self.last_seen[sender_id] = time.time()
 
                 # Se ainda não temos a conexão com esse nó, registramos
                 if sender_id not in self.neighbors:
@@ -563,7 +701,8 @@ class Node:
 
                 best = self.get_best_route(origin)
                 # Se a rota recém-chegada é a melhor, reenvia Flood
-                if best["sender"] == sender:   
+                if best["sender"] == sender:  
+                    best["state"] = "ACTIVE" 
                     print(f"[Node] Melhor rota para {origin} via {sender} (metric={new_metric})")
                     # Reenvia para vizinhos, exceto quem enviou
                     with self.lock:
@@ -605,6 +744,7 @@ class Node:
                 if prev_hop:
                     with self.lock:
                         self.forwarding_table.setdefault(origin, set()).add(prev_hop)
+                        self.last_seen[prev_hop] = time.time()
                         print(f"    -> Adicionei '{prev_hop}' como dependente para '{origin}'. FWD Table: {self.forwarding_table}")
                 else:
                     print(f"    -> [AVISO] Não identifiquei remetente do ACTIVATE. FWD table não foi atualizada.")
@@ -658,8 +798,11 @@ class Node:
             elif isinstance(msg_obj, SafeOptionMessage):
                 self.safe_option = msg_obj.safe
                 print(f"[{self.node_id}] safe_option atualizado: agora devo reconectar a {self.safe_option} se houver falha.")
+        
+            elif isinstance(msg_obj, HeartBeatActiveMessage):
+                self.last_seen[msg_obj.node_id] = msg_obj.timestamp
 
-
+                
         except Exception as e:
             print(f"[Node] Erro ao processar mensagem: {e}")
 
