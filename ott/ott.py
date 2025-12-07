@@ -703,14 +703,14 @@ class Node:
                 if prev_hop:
                     with self.lock:
                         self.forwarding_table.setdefault(origin, set()).add(prev_hop)
-                        print(f"    -> Adicionei '{prev_hop}' como dependente para '{origin}'. FWD Table: {self.forwarding_table}")
+                        print(f"    ->[AVISO] Adicionei '{prev_hop}' como dependente para '{origin}'. FWD Table: {self.forwarding_table}")
                 else:
                     print(f"    -> [AVISO] Não identifiquei remetente do ACTIVATE. FWD table não foi atualizada.")
                     # Se não sabemos quem pediu, não podemos continuar a cadeia.
                     return
 
                 if origin == self.node_id or self.my_role == "server" and origin == self.node_id:
-                    print(f"    -> Sou o origin ({self.node_id}). Não reencaminho ACTIVATE.")
+                    print(f"    -> [AVISO] Sou o origin ({self.node_id}). Não reencaminho ACTIVATE.")
                     return
                 
                 next_hop = None
@@ -719,15 +719,15 @@ class Node:
                     next_hop = best_route["sender"]
                 
                 if next_hop and next_hop in self.neighbors:
-                    print(f"    -> A reencaminhar ACTIVATE para o meu antecessor: {next_hop}")
+                    print(f"    ->[AVISO] A reencaminhar ACTIVATE para o meu antecessor: {next_hop}")
                     try:
                         sock_next = self.neighbors[next_hop]["socket"]
                         # Reenvia a mensagem original, preservando o client_id
                         TCPTransport.send(sock_next, ActivateMessage(origin, client_id).to_json().encode())
                     except Exception as e:
-                        print(f"    -> Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
+                        print(f"    ->[AVISO] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
                 else:
-                    print(f"    -> Não reencaminhei ACTIVATE. Motivo: Não tenho uma rota válida ou o antecessor já não é meu vizinho.")
+                    print(f"    ->[AVISO] Não reencaminhei ACTIVATE. Motivo: Não tenho uma rota válida ou o antecessor já não é meu vizinho.")
 
 
             elif isinstance(msg_obj, DangerMessage):
