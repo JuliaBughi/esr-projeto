@@ -1,0 +1,8 @@
+{
+  "nodes": {
+    "S1": {"host": "10.0.0.10", "neighbors": ["O2"]},
+    "O2": {"host": "10.0.0.1", "neighbors": ["S1", "C1", "C2"]},
+    "C1": {"host": "10.0.1.20", "neighbors": ["O2"]},
+    "C2": {"host": "10.0.2.20", "neighbors": ["O2"]}
+  }
+}
