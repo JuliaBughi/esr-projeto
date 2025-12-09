@@ -5,6 +5,7 @@ import argparse
 import threading
 import math
 import json
+import random
 from transport.tcp_transport import TCPTransport
 from transport.udp_transport import UDPTransport
 from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage, ClientStreamRequest
@@ -321,21 +322,51 @@ class Node:
         return latency + loss*10 - bandwidth_val/10
 
 
-    def start_rtp_stream(self, origin_id, video_file="movie.Mjpeg"):
+    def start_rtp_stream(self, origin_id):
         if self.my_role != "server" or self.node_id != origin_id:
             return
 
-        print(f"[STREAM] A iniciar stream RTP para a origem {origin_id}...")
+        print(f"[STREAM] A iniciar stream RTP (Playlist Aleatória) para a origem {origin_id}...")
         
+        streams_dir = "streams"
+
+        # 1. Validar se a pasta existe e tem ficheiros
+        if not os.path.exists(streams_dir) or not os.path.isdir(streams_dir):
+            print(f"[ERRO] A pasta '{streams_dir}' não existe na raiz do projeto.")
+            return
+
+        # Lista apenas ficheiros .Mjpeg
+        valid_files = [f for f in os.listdir(streams_dir) if f.endswith(".Mjpeg") or f.endswith(".mjpeg")]
+        
+        if not valid_files:
+            print(f"[ERRO] Nenhum ficheiro .Mjpeg encontrado na pasta '{streams_dir}'.")
+            return
+
         try:
-            video_stream = VideoStream(video_file)
+            # 2. Escolher o primeiro vídeo
+            current_video = random.choice(valid_files)
+            video_path = os.path.join(streams_dir, current_video)
+            print(f"[STREAM] A reproduzir: {current_video}")
+            
+            video_stream = VideoStream(video_path)
             
             while True:
-                # 1. Obter o próximo frame do ficheiro de vídeo
+                # 3. Obter o próximo frame
                 frame_data = video_stream.nextFrame()
 
+                # 4. Se o vídeo acabou, escolher outro aleatoriamente e continuar
                 if not frame_data:
-                    video_stream = VideoStream(video_file)  # reinicia o video
+                    old_video = current_video
+                    # Opcional: tentar escolher um diferente do anterior se houver mais que 1
+                    if len(valid_files) > 1:
+                        while current_video == old_video:
+                            current_video = random.choice(valid_files)
+                    else:
+                        current_video = valid_files[0]
+
+                    print(f"[STREAM] Fim de '{old_video}'. A mudar para: '{current_video}'")
+                    video_path = os.path.join(streams_dir, current_video)
+                    video_stream = VideoStream(video_path)
                     continue
 
                 frame_number = video_stream.frameNbr()
@@ -344,29 +375,26 @@ class Node:
                     # Verifica se há clientes ativos (dependentes diretos)
                     dependents = self.forwarding_table.get(origin_id, set())
 
+                # 5. Enviar apenas se houver alguém a ouvir
                 if dependents:
-                    # Criar o pacote RTP binário apenas se necessário
                     rtp_packet = RtpPacket()
                     rtp_packet.encode(version=2, padding=0, extension=0, cc=0, seqnum=frame_number, 
                                       marker=0, pt=26, ssrc=0, payload=frame_data)
                     packet_bytes = rtp_packet.getPacket()
 
-
-
-                # 3. Enviar os bytes do pacote RTP DIRETAMENTE via UDP para todos os dependentes
-                for dependent_id in dependents:
-                    if dependent_id in self.neighbors:
-                        n_info = self.neighbors[dependent_id]
-                        print(f"    -> Enviando frame RTP {frame_number} ({len(packet_bytes)} bytes) para {dependent_id}")
-                        self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes)
+                    for dependent_id in dependents:
+                        if dependent_id in self.neighbors:
+                            n_info = self.neighbors[dependent_id]
+                            # print(f"    -> Enviando frame RTP {frame_number} para {dependent_id}")
+                            self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes)
 
                 # Controla a taxa de frames (20 fps = 0.05s)
                 time.sleep(0.05)
             
-            print(f"[STREAM] Stream RTP terminado para {origin_id}.")
-
         except Exception as e:
             print(f"[ERRO] Falha no streaming RTP: {e}")
+            import traceback
+            traceback.print_exc()
 
 
         
