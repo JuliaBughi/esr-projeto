@@ -123,4 +123,8 @@ class HeartBeatActiveMessage(Message):
         self.node_id = node_id
         self.timestamp = timestamp
 
-
+class ClientStreamRequest(Message):
+    TYPE = "CLIENT_REQ"
+    
+    def __init__(self, stream_id: str):
+        self.stream_id = stream_id

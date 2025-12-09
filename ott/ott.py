@@ -7,15 +7,12 @@ import math
 import json
 from transport.tcp_transport import TCPTransport
 from transport.udp_transport import UDPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage, ClientStreamRequest
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
 from streaming.VideoStream import VideoStream
 from streaming.RtpPacket import RtpPacket
-from tkinter import Tk, Label
-from PIL import Image, ImageTk
-import io
-import base64
+
 
 MY_PORT = 5000
 MY_OTHER_PORT = 5001
@@ -63,18 +60,8 @@ class Node:
 
         self.last_seen = {}   # node_id -> last heartbeat timestamp
 
+        self.external_clients = {}  
 
-        if self.my_role == "client":
-            try:
-                # Inicia a parte gráfica numa thread separada para não bloquear a rede
-                self.tk_root = Tk()
-                self.video_player = VideoClientGUI(self.tk_root, self.graceful_leave)
-            except Exception as e:
-                print(f"[ERRO CRÍTICO NA GUI] Falha ao iniciar o Tkinter: {e}")
-                import traceback
-                traceback.print_exc()
-                # Se a GUI falhar, definimos tk_root como None para não haver mais erros
-                self.tk_root = None
 
 
     def start(self):
@@ -85,13 +72,19 @@ class Node:
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
 
-        if self.my_role == "middle":
+        if self.my_role != "server":
             threading.Thread(target=self.start_active_hb_sender_loop, daemon=True).start()
             threading.Thread(target=self.start_maintenance_loop, daemon=True).start()
         
         if self.my_role == "server":
             threading.Thread(target=self.periodic_flood, daemon=True).start()
             threading.Thread(target=self.start_rtp_stream, args=(self.node_id,), daemon=True).start()
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.graceful_leave()
 
 
     def bootstrap(self):
@@ -376,33 +369,41 @@ class Node:
             print(f"[ERRO] Falha no streaming RTP: {e}")
 
 
+        
     def handle_stream_data(self, data: bytes, sender_addr: tuple):
             try:
-                if self.my_role == "client" and self.video_player:
-                    rtp_packet = RtpPacket()
-                    rtp_packet.decode(data)
-                    frame_payload = rtp_packet.getPayload()
+                # Esta parte do 'if self.my_role == client' já não é usada se usares o client.py separado, 
+                # mas podes manter ou apagar. O importante é o que vem abaixo.
 
-                    if frame_payload:
-                        self.video_player.update_frame(frame_payload)
-                    return
+                all_dependents_overlay = set()
+                all_clients_external = set()
 
-                all_dependents = set()
                 with self.lock:
+                    # 1. Recolher dependentes da overlay (vizinhos)
                     for origin in self.forwarding_table:
-                        all_dependents.update(self.forwarding_table[origin])
+                        all_dependents_overlay.update(self.forwarding_table[origin])
+                    
+                    # 2. Recolher clientes externos (AGORA NUM LOOP SEPARADO)
+                    # Isto garante que mesmo que não haja vizinhos overlay, servimos os clientes.
+                    for origin in self.external_clients:
+                        all_clients_external.update(self.external_clients[origin])
 
-                if not all_dependents:
-                    print(f"[{self.node_id}] Dropped packet, empty FWD table.")
-                    return
-
-                for dependent_id in all_dependents:
+                # Reencaminhar para vizinhos da Overlay
+                for dependent_id in all_dependents_overlay:
                     if dependent_id in self.neighbors:
                         n_info = self.neighbors[dependent_id]
                         self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, data)
 
+                # Reencaminhar para Clientes Externos
+                for client_ip in all_clients_external:
+                    # Envia para a porta 5001 (MY_OTHER_PORT) do cliente
+                    self.udp_transport.send(client_ip, MY_OTHER_PORT, data)
+                    
             except Exception as e:
-                print(f"[{self.node_id}] Error in handle_stream_data: {e}")
+                # print(f"[{self.node_id}] Error in handle_stream_data: {e}")
+                pass
+
+  
 
 
 
@@ -709,25 +710,19 @@ class Node:
                     # Se não sabemos quem pediu, não podemos continuar a cadeia.
                     return
 
-                if origin == self.node_id or self.my_role == "server" and origin == self.node_id:
+                if self.node_id == origin: 
                     print(f"    -> [AVISO] Sou o origin ({self.node_id}). Não reencaminho ACTIVATE.")
                     return
                 
-                next_hop = None
                 best_route = self.get_best_route(origin)
                 if best_route:
                     next_hop = best_route["sender"]
                 
-                if next_hop and next_hop in self.neighbors:
+                if next_hop in self.neighbors:
                     print(f"    ->[AVISO] A reencaminhar ACTIVATE para o meu antecessor: {next_hop}")
                     try:
-                        sock_next = self.neighbors[next_hop]["socket"]
-                        # Reenvia a mensagem original, preservando o client_id
-                        TCPTransport.send(sock_next, ActivateMessage(origin, client_id).to_json().encode())
-                    except Exception as e:
-                        print(f"    ->[AVISO] Erro ao reencaminhar ACTIVATE para {next_hop}: {e}")
-                else:
-                    print(f"    ->[AVISO] Não reencaminhei ACTIVATE. Motivo: Não tenho uma rota válida ou o antecessor já não é meu vizinho.")
+                        TCPTransport.send(self.neighbors[next_hop]["socket"], ActivateMessage(origin, msg_obj.client_id).to_json().encode())
+                    except: pass
 
 
             elif isinstance(msg_obj, DangerMessage):
@@ -747,7 +742,7 @@ class Node:
                         self.danger.append(danger_node)
                         print(f"[{self.node_id}] danger já tem elementos → safe_option para {danger_node} é {safe}")
 
-                # Enviar mensagem SafeOption de volta ao nodo em perigo
+                # Envia a mensagem SafeOption de volta ao nodo em perigo
                 try:
                     TCPTransport.send(
                         self.neighbors[danger_node]["socket"],
@@ -766,69 +761,46 @@ class Node:
                 self.last_seen[sender_id] = time.time()
                 return
 
+            elif isinstance(msg_obj, ClientStreamRequest):
+                stream_id = msg_obj.stream_id
+                client_ip, _ = sock.getpeername()
+                print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu stream {stream_id}")
+
+                # Adiciona o cliente à lista de distribuição
+                with self.lock:
+                    self.external_clients.setdefault(stream_id, set()).add(client_ip)
+
+                # Ativa a rota para cima (comportamento de nodo folha)
+                best = self.get_best_route(stream_id)
+                if best:
+                    parent = best["sender"]
+                    if parent in self.neighbors:
+                        print(f"[CLIENT-REQ] Enviando ACTIVATE para {parent}")
+                        try:
+                            # O client_id no Activate agora somos nós (o nodo folha), pois nós é que pedimos à rede
+                            TCPTransport.send(
+                                self.neighbors[parent]["socket"], 
+                                ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
+                            )
+                        except Exception as e:
+                            print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
+                else:
+                    print(f"[CLIENT-REQ] Erro: Não tenho rota para {stream_id}")
                 
         except Exception as e:
             print(f"[Node] Erro ao processar mensagem: {e}")
-
-
-class VideoClientGUI:
-    def __init__(self, tk_root, on_close_callback):
-        self.root = tk_root
-        self.root.title("OTT Video Player")
-        self.on_close_callback = on_close_callback
-        self.root.protocol("WM_DELETE_WINDOW", self.handler)
-        self.label = Label(self.root)
-        self.label.pack()
-
-    def update_frame(self, frame_data):
-        """Recebe os bytes de um frame JPEG e exibe-os."""
-        try:
-            image = Image.open(io.BytesIO(frame_data))
-            photo = ImageTk.PhotoImage(image)
-            self.label.config(image=photo)
-            self.label.image = photo
-        except Exception:
-            # Ignora frames corrompidos, o que é comum em UDP
-            pass
-
-    def handler(self):
-        """Chamado quando a janela é fechada."""
-        # Chama a função de graceful_leave do nó principal
-        self.on_close_callback()
-        # Fecha a janela gráfica
-        self.root.destroy()
+            import traceback
+            traceback.print_exc()
 
 # ----------------------------
 # Main
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Over the top application")
-    parser.add_argument("--role", type=str, choices=["server", "client", "middle"], default="middle", help="server, client ou middle")
+    parser.add_argument("--role", type=str, choices=["server", "middle"], default="middle", help="server ou middle")
     parser.add_argument("--host", default="0.0.0.0", help="IP do node Host")
     parser.add_argument("--boot", dest="boot", default="0.0.0.0", help="IP do Bootstrapper")
     args = parser.parse_args()
 
-    # corrigido: usar args.boot e passar porta 5000
     node = Node(args.host, (args.boot, 5000), args.role)
-    threading.Thread(target=node.start, daemon=True).start()
-
-    if node.my_role == "client":
-        # Se for um cliente, e se a inicialização da GUI tiver sido bem sucedida
-        if node.tk_root:
-            print("[DEBUG] A entregar o controlo ao mainloop do Tkinter...")
-            try:
-                # Esta função bloqueia e só retorna quando a janela é fechada
-                node.tk_root.mainloop()
-            finally:
-                # Garante que o graceful_leave é chamado quando a janela fecha
-                node.graceful_leave()
-        else:
-            print("[AVISO] GUI não foi iniciada. O nó cliente vai terminar pois não tem nada para fazer.")
-    else:
-        # Se for um servidor ou nó intermediário, esperamos com um loop simples
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n[MAIN] Ctrl+C detectado. A iniciar saída graciosa...")
-            node.graceful_leave()
+    node.start()

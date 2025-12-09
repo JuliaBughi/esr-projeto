@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, FloodMessage, ActivateMessage, HeartBeatActiveMessage
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, FloodMessage, ActivateMessage, HeartBeatActiveMessage, ClientStreamRequest
 
 def parse_message(json_str: str) -> Message:
     """
@@ -47,6 +47,9 @@ def parse_message(json_str: str) -> Message:
             timestamp=data["timestamp"]
         )
 
+    elif msg_type == "CLIENT_REQ":
+        return ClientStreamRequest(stream_id=data["stream_id"])
+    
     else:
         # Mensagem desconhecida
         return Message()
