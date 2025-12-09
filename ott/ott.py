@@ -63,6 +63,8 @@ class Node:
 
         self.external_clients = {}  
 
+        self.pending_any_stream_clients = set()
+
 
 
     def start(self):
@@ -326,7 +328,7 @@ class Node:
         if self.my_role != "server" or self.node_id != origin_id:
             return
 
-        print(f"[STREAM] A iniciar stream RTP (Playlist Aleatória) para a origem {origin_id}...")
+        print(f"[STREAM] A iniciar stream RTP para a origem {origin_id}...")
         
         streams_dir = "streams"
 
@@ -343,29 +345,22 @@ class Node:
             return
 
         try:
-            # 2. Escolher o primeiro vídeo
-            current_video = random.choice(valid_files)
-            video_path = os.path.join(streams_dir, current_video)
-            print(f"[STREAM] A reproduzir: {current_video}")
+            # 2. Escolher o vídeo aleatoriamente UMA VEZ (antes do loop)
+            selected_video = random.choice(valid_files)
+            video_path = os.path.join(streams_dir, selected_video)
+            print(f"[STREAM] Conteúdo selecionado para este canal: '{selected_video}'")
             
+            # Carrega o vídeo selecionado
             video_stream = VideoStream(video_path)
             
             while True:
                 # 3. Obter o próximo frame
                 frame_data = video_stream.nextFrame()
 
-                # 4. Se o vídeo acabou, escolher outro aleatoriamente e continuar
+                # 4. Se o vídeo acabou, reiniciar O MESMO vídeo
                 if not frame_data:
-                    old_video = current_video
-                    # Opcional: tentar escolher um diferente do anterior se houver mais que 1
-                    if len(valid_files) > 1:
-                        while current_video == old_video:
-                            current_video = random.choice(valid_files)
-                    else:
-                        current_video = valid_files[0]
-
-                    print(f"[STREAM] Fim de '{old_video}'. A mudar para: '{current_video}'")
-                    video_path = os.path.join(streams_dir, current_video)
+                    print(f"[STREAM] Fim do vídeo. A reiniciar '{selected_video}'...")
+                    # Recarrega o mesmo ficheiro para voltar ao início
                     video_stream = VideoStream(video_path)
                     continue
 
@@ -385,7 +380,6 @@ class Node:
                     for dependent_id in dependents:
                         if dependent_id in self.neighbors:
                             n_info = self.neighbors[dependent_id]
-                            # print(f"    -> Enviando frame RTP {frame_number} para {dependent_id}")
                             self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes)
 
                 # Controla a taxa de frames (20 fps = 0.05s)
@@ -658,7 +652,12 @@ class Node:
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
                 sender = msg_obj.sender
-                host = self.neighbors[sender]["ip"]
+
+                if sender in self.neighbors:
+                    host = self.neighbors[sender]["ip"]
+                else:
+                    host = None 
+
                 jumps = msg_obj.jumps + 1
 
                 # Valores antigos da mensagem
@@ -667,9 +666,14 @@ class Node:
                 prev_bandwidth = msg_obj.bandwidth or math.inf
 
                 # Métricas do link atual
-                link_latency = get_latency(host) or 0
-                link_loss = get_packet_loss(host) or 0
-                link_bandwidth = get_bandwidth(host) or 0
+                if host:
+                    link_latency = get_latency(host) or 0
+                    link_loss = get_packet_loss(host) or 0
+                    link_bandwidth = get_bandwidth(host) or 0
+                else:
+                    link_latency = 0
+                    link_loss = 0
+                    link_bandwidth = 1000
 
                 # Combina cumulativamente
                 latency = prev_latency + link_latency
@@ -706,21 +710,32 @@ class Node:
                                     print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
 
                     # Se for client, dispara activate na melhor rota
-                    if self.my_role == "client":
-                        next_hop = sender  # reenvia para quem enviou o flood
-                        if next_hop in self.neighbors:
+                    with self.lock:
+                        if self.pending_any_stream_clients:
+                            print(f"[NODE] Tenho clientes à espera e recebi rota para {origin}. Ativando...")
+                            
+                            # 1. Adicionar clientes à lista deste stream
+                            if origin not in self.external_clients:
+                                self.external_clients[origin] = set()
+                            
+                            self.external_clients[origin].update(self.pending_any_stream_clients)
+                            self.pending_any_stream_clients.clear()
+                            
+                            # 2. Enviar ACTIVATE para cima (para o sender desta mensagem)
                             try:
-                                TCPTransport.send(
-                                    self.neighbors[next_hop]["socket"],
-                                    ActivateMessage(origin, self.node_id).to_json().encode()
-                                )
-                                print(f"[CLIENT] Enviei ACTIVATE para {next_hop}")
-                                # Marca localmente como ACTIVE
-                                if best:
-                                    with self.lock:
-                                        best["state"] = "ACTIVE"
+                                # O socket do sender está na lista de neighbors
+                                if sender in self.neighbors:
+                                    sender_sock = self.neighbors[sender]["socket"]
+                                    TCPTransport.send(
+                                        sender_sock,
+                                        ActivateMessage(origin=origin, client_id=self.node_id).to_json().encode()
+                                    )
+                                    print(f"[NODE] Auto-Activate enviado para {sender}")
+                                    
+                                    # Marcar rota como ativa localmente
+                                    best["state"] = "ACTIVE"
                             except Exception as e:
-                                print(f"[CLIENT] Falha ao enviar ACTIVATE: {e}")
+                                print(f"[NODE] Erro no Auto-Activate: {e}")
 
             elif isinstance(msg_obj, ActivateMessage):
                 origin = msg_obj.origin
@@ -792,28 +807,66 @@ class Node:
             elif isinstance(msg_obj, ClientStreamRequest):
                 stream_id = msg_obj.stream_id
                 client_ip, _ = sock.getpeername()
-                print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu stream {stream_id}")
+                
+                if stream_id is None:
+                    print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu QUALQUER stream.")
+                    
+                    # 1. Verificar se já temos alguma rota ativa na tabela
+                    # Vamos tentar encontrar a melhor rota disponível de todas
+                    best_route_found = None
+                    
+                    # Procura na routing table a primeira rota válida
+                    # (Poderíamos melhorar para escolher a com menor métrica de todas, mas a primeira serve)
+                    if self.routing_table:
+                        # Ordena por métrica para dar a melhor rede disponível
+                        sorted_routes = sorted(self.routing_table, key=lambda x: x['metric'])
+                        best_route_found = sorted_routes[0] # Pega na melhor
+                    
+                    if best_route_found:
+                        stream_id = best_route_found["origin"]
+                        print(f"[CLIENT-REQ] Atribuindo stream '{stream_id}' ao cliente {client_ip}")
+                        
+                        # Adicionar aos clientes externos desse stream
+                        with self.lock:
+                            self.external_clients.setdefault(stream_id, set()).add(client_ip)
+                        
+                        # Envia ACTIVATE para cima
+                        parent = best_route_found["sender"] # ou 'antecessor' na vossa estrutura antiga, verifiquem chaves
+                        if parent in self.neighbors:
+                            try:
+                                TCPTransport.send(
+                                    self.neighbors[parent]["socket"], 
+                                    ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
+                                )
+                                print(f"[CLIENT-REQ] Enviado ACTIVATE para {parent} (Stream: {stream_id})")
+                            except Exception as e:
+                                print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
+                    else:
+                        # Se não há rotas, guarda o cliente para depois
+                        print(f"[CLIENT-REQ] Nenhuma rota disponível ainda. Cliente {client_ip} em espera.")
+                        with self.lock:
+                            self.pending_any_stream_clients.add(client_ip)
 
-                # Adiciona o cliente à lista de distribuição
-                with self.lock:
-                    self.external_clients.setdefault(stream_id, set()).add(client_ip)
-
-                # Ativa a rota para cima (comportamento de nodo folha)
-                best = self.get_best_route(stream_id)
-                if best:
-                    parent = best["sender"]
-                    if parent in self.neighbors:
-                        print(f"[CLIENT-REQ] Enviando ACTIVATE para {parent}")
-                        try:
-                            # O client_id no Activate agora somos nós (o nodo folha), pois nós é que pedimos à rede
-                            TCPTransport.send(
-                                self.neighbors[parent]["socket"], 
-                                ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
-                            )
-                        except Exception as e:
-                            print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
                 else:
-                    print(f"[CLIENT-REQ] Erro: Não tenho rota para {stream_id}")
+                    # LÓGICA ANTIGA (PEDIDO ESPECÍFICO)
+                    print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu stream {stream_id}")
+                    with self.lock:
+                        self.external_clients.setdefault(stream_id, set()).add(client_ip)
+
+                    best = self.get_best_route(stream_id)
+                    if best:
+                        parent = best["sender"]
+                        if parent in self.neighbors:
+                            print(f"[CLIENT-REQ] Enviando ACTIVATE para {parent}")
+                            try:
+                                TCPTransport.send(
+                                    self.neighbors[parent]["socket"], 
+                                    ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
+                                )
+                            except Exception as e:
+                                print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
+                    else:
+                        print(f"[CLIENT-REQ] Erro: Não tenho rota para {stream_id}")
                 
         except Exception as e:
             print(f"[Node] Erro ao processar mensagem: {e}")
