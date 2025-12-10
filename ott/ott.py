@@ -65,6 +65,12 @@ class Node:
 
         self.pending_any_stream_clients = set()
 
+        # origin -> node_id do meu pai (o next-hop preferido para esse origin)
+        self.parent_of = {}
+
+        # origin -> node_id do avô (grandparent) para fallback
+        self.grandparent_of = {}
+
 
 
     def start(self):
@@ -137,10 +143,14 @@ class Node:
 
     def handle_neighbor_failure(self, failed_node_id):
         print(f"[FAILURE] Vizinho {failed_node_id} considerado morto.")
+        
+        affected_origins = set()
+        recommended_targets = {}  # origin → grandparent
 
-        # 1. Remover vizinho das estruturas internas
+        # Remover vizinho e recolher origins afetados
         with self.lock:
-            # neighbors
+
+            # remover neighbor
             if failed_node_id in self.neighbors:
                 try:
                     self.neighbors[failed_node_id]["socket"].close()
@@ -148,36 +158,35 @@ class Node:
                     pass
                 del self.neighbors[failed_node_id]
 
-            # last_seen
+            # remover last_seen
             if failed_node_id in self.last_seen:
                 del self.last_seen[failed_node_id]
 
-            # rotas dependentes do vizinho falhado
-            affected_origins = set(
-                route["origin"]
-                for route in self.routing_table
-                if route["sender"] == failed_node_id
-            )
+            # identificar origins cujas rotas dependiam do falhado
+            for route in self.routing_table:
+                if route["sender"] == failed_node_id:
+                    affected_origins.add(route["origin"])
 
-            # limpar rotas vindas do vizinho falhado
+            # limpar rotas vindas do falhado
             self.routing_table = [
-                r for r in self.routing_table
-                if r["sender"] != failed_node_id
+                r for r in self.routing_table if r["sender"] != failed_node_id
             ]
 
-            # remover dependências na forwarding table
-            for origin, deps in list(self.forwarding_table.items()):
+            # limpar forwarding table
+            for origin, deps in self.forwarding_table.items():
                 if failed_node_id in deps:
                     deps.remove(failed_node_id)
 
 
-        # 2. Recuperar rotas para cada origem afetada
+        # Para cada origin verificar alternativas
         for origin in affected_origins:
+
             best = self.get_best_route(origin)
 
             if best:
+                # rota alternativa existe → basta ativar
                 new_parent = best["sender"]
-                print(f"[RECOVERY] Para origin {origin}, nova rota encontrada via {new_parent}")
+                print(f"[RECOVERY] Para origin {origin}, rota alternativa via {new_parent}")
 
                 if new_parent in self.neighbors:
                     try:
@@ -185,11 +194,43 @@ class Node:
                             self.neighbors[new_parent]["socket"],
                             ActivateMessage(origin, self.node_id).to_json().encode()
                         )
-                        print(f"[RECOVERY] ACTIVATE enviado para {new_parent}")
                     except:
-                        print("[RECOVERY] Falha ao enviar ACTIVATE")
+                        print(f"[RECOVERY] Falha ao enviar ACTIVATE para {new_parent}")
+
+                continue
+
+            gp = self.grandparent_of.get(origin)
+
+            if not gp:
+                print(f"[FAILURE] Origin {origin} perdeu rota e não tem grandparent disponível!")
+                continue
+
+            # Conectar ao grandparent
+            if gp not in self.overlay_mapping:
+                print(f"[FAILURE] Não tenho informação de overlay para grandparent {gp}")
+                continue
+
+            info = self.overlay_mapping[gp]
+            gp_host = info.get("host")
+            gp_port = info.get("port")
+            print(f"[RECOVERY] A ligar ao avô {gp} para origin {origin} ({gp_host}:{gp_port})")
+
+            gp_sock = self.tcp_transport.connect(gp_host, gp_port)
+            if gp_sock:
+                with self.lock:
+                    self.neighbors[gp] = {
+                        "ip": gp_host,
+                        "port": gp_port,
+                        "socket": gp_sock,
+                        "established": False
+                    }
+                    self.sock_to_id[gp_sock] = gp
+                    self.forwarding_table.setdefault(origin, set()).add(gp)
+
+                TCPTransport.send(gp_sock, HelloMessage(self.node_id).to_json().encode())
             else:
-                print(f"[RECOVERY] Sem rota alternativa para origin {origin} - rota perdida.")
+                print(f"[FAILURE] Não consegui ligar ao grandparent {gp}")
+
             
     def periodic_flood(self, interval=10):
         while True:
@@ -200,7 +241,7 @@ class Node:
                 try:
                     TCPTransport.send(
                         n_info["socket"],
-                        FloodMessage(origin=self.node_id, sender=self.node_id, jumps=start_jump, loss=0.0, bandwidth=math.inf, latency=0.0).to_json().encode()
+                        FloodMessage(origin=self.node_id, sender=self.node_id, grandparent = None, jumps=start_jump, loss=0.0, bandwidth=math.inf, latency=0.0).to_json().encode()
                     )
                     print(f"[NODE] Enviei FLOOD para {neighbor_id}")
                 except Exception as e:
@@ -425,9 +466,6 @@ class Node:
                 # print(f"[{self.node_id}] Error in handle_stream_data: {e}")
                 pass
 
-  
-
-
 
     def get_grandparent(self):
         for origin in self.forwarding_table:
@@ -646,12 +684,23 @@ class Node:
                             else:
                                 print(f"[LEAVE] Falha ao conectar ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
 
-                    
-
-
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
                 sender = msg_obj.sender
+                grandparent = msg_obj.grandparent
+
+                grandparent_id = grandparent.get("id") if grandparent else None
+                
+                if grandparent:
+                    gp_id = grandparent["id"]
+                    gp_host = grandparent["ip"]
+                    gp_port = grandparent["port"]
+                    
+                    if gp_id not in self.overlay_mapping: 
+                        self.overlay_mapping[gp_id] = {
+                            "host": gp_host, 
+                            "port": gp_port
+                        }
 
                 if sender in self.neighbors:
                     host = self.neighbors[sender]["ip"]
@@ -685,6 +734,7 @@ class Node:
                 route_entry = {
                     "origin": origin,
                     "sender": sender,
+                    "grandparent": grandparent_id,
                     "metric": new_metric,
                     "state": "INACTIVE",
                     "timestamp": now
@@ -692,19 +742,38 @@ class Node:
                 self.update_route(route_entry)
                 print(f"[Node] Atualizei tabela para {origin} via {sender} (metric={new_metric})")
 
+
                 best = self.get_best_route(origin)
                 # Se a rota recém-chegada é a melhor, reenvia Flood
                 if best["sender"] == sender:  
                     best["state"] = "ACTIVE" 
                     print(f"[Node] Melhor rota para {origin} via {sender} (metric={new_metric})")
+
+                    for r in self.routing_table:
+                        if r["origin"] == origin and r["sender"] != best["sender"]:
+                            r["state"] = "INACTIVE"
+
+
                     # Reenvia para vizinhos, exceto quem enviou
                     with self.lock:
+                        self.parent_of[origin] = sender
+                        self.grandparent_of[origin] = grandparent_id
+
+                        next_gp = sender
+
+                        info = self.overlay_mapping[next_gp]
+                        recommended_target = {
+                            "id": sender,
+                            "ip": info["host"],
+                            "port": info["port"]
+                        }
+
                         for neighbor_id, n_info in self.neighbors.items():
                             if neighbor_id != sender:
                                 try:
                                     TCPTransport.send(
                                         n_info["socket"],
-                                        FloodMessage(origin=origin, sender=self.node_id, jumps=jumps, loss=loss, bandwidth=bandwidth, latency=latency).to_json().encode()
+                                        FloodMessage(origin=origin, sender=self.node_id,grandparent = recommended_target, jumps=jumps, loss=loss, bandwidth=bandwidth, latency=latency).to_json().encode()
                                     )
                                 except Exception as e:
                                     print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")

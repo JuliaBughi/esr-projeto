@@ -25,7 +25,7 @@ def parse_message(json_str: str) -> Message:
     
     elif msg_type == "FLOOD":
         return FloodMessage(
-            origin=data["origin"], sender=data["sender"],
+            origin=data["origin"], sender=data["sender"], grandparent = data["grandparent"], 
             jumps=data.get("jumps", 0), loss=data.get("loss", 0),
             bandwidth=data.get("bandwidth", 0), latency=data.get("latency", 0))
 
