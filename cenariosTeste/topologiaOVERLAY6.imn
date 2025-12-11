@@ -82,6 +82,10 @@ node n5 {
     network-config {
 	hostname O2
 	!
+	interface eth3
+	 ip address 10.0.1.1/24
+	 ipv6 address 2001:1::1/64
+	!
 	interface eth2
 	 ip address 10.0.4.1/24
 	 ipv6 address 2001:4::1/64
@@ -101,6 +105,7 @@ node n5 {
     interface-peer {eth0 n4}
     interface-peer {eth1 n3}
     interface-peer {eth2 n6}
+    interface-peer {eth3 n8}
 }
 
 node n6 {
@@ -115,8 +120,8 @@ node n6 {
 	!
     }
     canvas c1
-    iconcoords {128.0 277.3333333333333}
-    labelcoords {120.0 320.0}
+    iconcoords {141.0 183.33333333333331}
+    labelcoords {133.0 226.0}
     interface-peer {eth0 n5}
 }
 
@@ -133,6 +138,23 @@ node n7 {
     interface-peer {e1 n1}
     interface-peer {e2 n2}
     interface-peer {e3 n4}
+}
+
+node n8 {
+    type router
+    model PC
+    network-config {
+	hostname C2
+	!
+	interface eth0
+	 ip address 10.0.1.20/24
+	 ipv6 address 2001:1::20/64
+	!
+    }
+    canvas c1
+    iconcoords {139.0 369.0}
+    labelcoords {139.0 401.0}
+    interface-peer {eth0 n5}
 }
 
 link l1 {
@@ -168,6 +190,11 @@ link l7 {
 link l4 {
     delay 20000
     nodes {n4 n7}
+    bandwidth 0
+}
+
+link l8 {
+    nodes {n8 n5}
     bandwidth 0
 }
 
