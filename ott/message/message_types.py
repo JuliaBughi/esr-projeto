@@ -59,17 +59,6 @@ class HelloBackMessage(Message):
 
 
 # ----------------------------
-# Mensagem LEAVE (saída do overlay)
-# ----------------------------
-class LeaveMessage(Message):
-    TYPE = "LEAVE"
-
-    def __init__(self, node_id: str, recommended: Optional[Dict]):
-        self.node_id = node_id
-        self.recommended = recommended
-
-
-# ----------------------------
 # Mensagem FLOOD (inundação do overlay)
 # ----------------------------
 class FloodMessage(Message):

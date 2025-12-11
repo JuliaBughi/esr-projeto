@@ -8,7 +8,7 @@ import json
 import random
 from transport.tcp_transport import TCPTransport
 from transport.udp_transport import UDPTransport
-from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, LeaveMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage, ClientStreamRequest
+from message.message_types import HelloMessage, HelloBackMessage, JoinMessage, WelcomeMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage, ClientStreamRequest
 from message.parser import parse_message
 from metrics.metrics import get_latency, get_packet_loss, get_bandwidth
 from streaming.VideoStream import VideoStream
@@ -81,9 +81,9 @@ class Node:
         print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
 
-        if self.my_role != "server":
-            threading.Thread(target=self.start_active_hb_sender_loop, daemon=True).start()
-            threading.Thread(target=self.start_maintenance_loop, daemon=True).start()
+
+        threading.Thread(target=self.start_active_hb_sender_loop, daemon=True).start()
+        threading.Thread(target=self.start_maintenance_loop, daemon=True).start()
         
         if self.my_role == "server":
             threading.Thread(target=self.periodic_flood, daemon=True).start()
@@ -93,7 +93,7 @@ class Node:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            self.graceful_leave()
+            sys.exit(0)
 
 
     def bootstrap(self):
@@ -111,13 +111,19 @@ class Node:
             try:
                 time.sleep(1)
 
+                # Iterar sobre os vizinhos
                 for node_id, info in list(self.neighbors.items()):
                     sock = info.get("socket")
-                    if not sock:
+                    is_established = info.get("established", False)
+
+                    if not sock or not is_established:
                         continue
 
                     try:
-                        TCPTransport.send(sock, HeartBeatActiveMessage(timestamp=time.time(), node_id=self.node_id).to_json().encode())
+                        TCPTransport.send(
+                            sock, 
+                            HeartBeatActiveMessage(timestamp=time.time(), node_id=self.node_id).to_json().encode()
+                        )
                     except Exception as e:
                         print(f"[HB-SEND] Falha ao enviar HB para {node_id}: {e}")
 
@@ -126,20 +132,34 @@ class Node:
 
 
     def start_maintenance_loop(self):
-        timeout_limit = 10  # segundos
+        timeout_limit = 10
 
         while True:
-            try:
-                time.sleep(1)
-                now = time.time()
+            time.sleep(2)
+            now = time.time()
 
-                for node_id, last in list(self.last_seen.items()):
-                    if now - last > timeout_limit:
-                        print(f"[FAILURE] Vizinho {node_id} está inativo (timeout).")
-                        self.handle_neighbor_failure(failed_node_id=node_id)
+            # === TIMEOUT DE HEARTBEAT ===  
+            for node_id, last in list(self.last_seen.items()):
+                if now - last > timeout_limit:
+                    print(f"[FAILURE] Vizinho {node_id} está inativo (timeout).")
+                    self.handle_neighbor_failure(node_id)
 
-            except Exception as e:
-                print(f"[ERROR] maintenance_loop: {e}")
+            # === DETETAR ISOLAMENTO TOTAL ===
+            with self.lock:
+                neighbors_copy = dict(self.neighbors)
+
+            total = len(neighbors_copy)
+            dead_count = 0
+
+            for node_id, info in neighbors_copy.items():
+                if info.get("established") is False:
+                    dead_count += 1
+
+            # Se todos estão mortos, tenta reconectar
+            if total > 0 and dead_count == total:
+                print(f"[{self.node_id}] ISOLADO! A tentar reconectar...")
+                self.try_reconnect()
+
 
     def handle_neighbor_failure(self, failed_node_id):
         print(f"[FAILURE] Vizinho {failed_node_id} considerado morto.")
@@ -150,14 +170,17 @@ class Node:
         # Remover vizinho e recolher origins afetados
         with self.lock:
 
-            # remover neighbor
+            # desligar neighbor
             if failed_node_id in self.neighbors:
                 try:
-                    self.neighbors[failed_node_id]["socket"].close()
+                    sock = self.neighbors[failed_node_id].get("socket")
+                    if sock:
+                        sock.close()   # FECHA A CONEXÃO TCP CORRETAMENTE
                 except:
                     pass
-                del self.neighbors[failed_node_id]
 
+                self.neighbors[failed_node_id]["established"] = False
+                
             # remover last_seen
             if failed_node_id in self.last_seen:
                 del self.last_seen[failed_node_id]
@@ -177,59 +200,96 @@ class Node:
                 if failed_node_id in deps:
                     deps.remove(failed_node_id)
 
+        if self.my_role != "server":
+            # Para cada origin verificar alternativas
+            for origin in affected_origins:
 
-        # Para cada origin verificar alternativas
-        for origin in affected_origins:
+                best = self.get_best_route(origin)
 
-            best = self.get_best_route(origin)
+                if best:
+                    # rota alternativa existe → basta ativar
+                    new_parent = best["sender"]
+                    print(f"[RECOVERY] Para origin {origin}, rota alternativa via {new_parent}")
 
-            if best:
-                # rota alternativa existe → basta ativar
-                new_parent = best["sender"]
-                print(f"[RECOVERY] Para origin {origin}, rota alternativa via {new_parent}")
+                    if new_parent in self.neighbors:
+                        try:
+                            TCPTransport.send(
+                                self.neighbors[new_parent]["socket"],
+                                ActivateMessage(origin, self.node_id).to_json().encode()
+                            )
+                        except:
+                            print(f"[RECOVERY] Falha ao enviar ACTIVATE para {new_parent}")
 
-                if new_parent in self.neighbors:
-                    try:
-                        TCPTransport.send(
-                            self.neighbors[new_parent]["socket"],
-                            ActivateMessage(origin, self.node_id).to_json().encode()
-                        )
-                    except:
-                        print(f"[RECOVERY] Falha ao enviar ACTIVATE para {new_parent}")
+                    continue
 
+                gp = self.grandparent_of.get(origin)
+
+                if not gp:
+                    print(f"[FAILURE] Origin {origin} perdeu rota e não tem grandparent disponível!")
+                    continue
+
+                # Conectar ao grandparent
+                if gp not in self.overlay_mapping:
+                    print(f"[FAILURE] Não tenho informação de overlay para grandparent {gp}")
+                    continue
+
+                info = self.overlay_mapping[gp]
+                gp_host = info.get("host")
+                gp_port = info.get("port")
+                print(f"[RECOVERY] A ligar ao avô {gp} para origin {origin} ({gp_host}:{gp_port})")
+
+                gp_sock = self.tcp_transport.connect(gp_host, gp_port)
+                if gp_sock:
+                    with self.lock:
+                        self.neighbors[gp] = {
+                            "ip": gp_host,
+                            "port": gp_port,
+                            "socket": gp_sock,
+                            "established": False
+                        }
+                        self.sock_to_id[gp_sock] = gp
+                        self.forwarding_table.setdefault(origin, set()).add(gp)
+
+                    TCPTransport.send(gp_sock, HelloMessage(self.node_id).to_json().encode())
+                else:
+                    print(f"[FAILURE] Não consegui ligar ao grandparent {gp}")
+
+
+    def try_reconnect(self):
+        with self.lock:
+            overlay_copy = dict(self.overlay_mapping)
+
+        for other_id, info in overlay_copy.items():
+
+            if other_id == self.node_id:
                 continue
 
-            gp = self.grandparent_of.get(origin)
+            host = info["host"]
+            port = info["port"]
 
-            if not gp:
-                print(f"[FAILURE] Origin {origin} perdeu rota e não tem grandparent disponível!")
-                continue
+            print(f"[{self.node_id}] A tentar reconectar a {other_id} ({host}:{port})...")
 
-            # Conectar ao grandparent
-            if gp not in self.overlay_mapping:
-                print(f"[FAILURE] Não tenho informação de overlay para grandparent {gp}")
-                continue
-
-            info = self.overlay_mapping[gp]
-            gp_host = info.get("host")
-            gp_port = info.get("port")
-            print(f"[RECOVERY] A ligar ao avô {gp} para origin {origin} ({gp_host}:{gp_port})")
-
-            gp_sock = self.tcp_transport.connect(gp_host, gp_port)
-            if gp_sock:
+            sock = self.tcp_transport.connect(host, port)
+            if sock:
                 with self.lock:
-                    self.neighbors[gp] = {
-                        "ip": gp_host,
-                        "port": gp_port,
-                        "socket": gp_sock,
+                    self.neighbors[other_id] = {
+                        "ip": host,
+                        "port": port,
+                        "socket": sock,
                         "established": False
                     }
-                    self.sock_to_id[gp_sock] = gp
-                    self.forwarding_table.setdefault(origin, set()).add(gp)
+                    self.sock_to_id[sock] = other_id
 
-                TCPTransport.send(gp_sock, HelloMessage(self.node_id).to_json().encode())
-            else:
-                print(f"[FAILURE] Não consegui ligar ao grandparent {gp}")
+                TCPTransport.send(
+                    sock,
+                    HelloMessage(self.node_id).to_json().encode()
+                )
+
+                print(f"[{self.node_id}] Reconexão iniciada com {other_id}")
+                return
+
+        print(f"[{self.node_id}] Falha na reconexão: nenhum nó disponível.")
+
 
             
     def periodic_flood(self, interval=10):
@@ -238,6 +298,8 @@ class Node:
             with self.lock:
                 neighbors_items = list(self.neighbors.items())
             for neighbor_id, n_info in neighbors_items:
+                if not n_info.get("established", False):
+                    continue
                 try:
                     TCPTransport.send(
                         n_info["socket"],
@@ -247,81 +309,6 @@ class Node:
                 except Exception as e:
                     print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
             time.sleep(interval)
-
-    def graceful_leave(self):
-
-        print(f"[LEAVE] Iniciando graceful leave do nó {self.node_id}")
-
-        # snapshot para evitar mutações enquanto iteramos
-        neighbors_snapshot = list(self.neighbors.keys())
-
-        for neighbor_id in neighbors_snapshot:
-            print(f"\n[LEAVE] Processando neighbor {neighbor_id}")
-
-            # 1. Determinar todos os origins para os quais o neighbor DEPENDE de mim
-            child_origins = []
-            for origin, next_hops in self.forwarding_table.items():
-                if neighbor_id in next_hops:
-                    child_origins.append(origin)
-
-            print(f"[LEAVE] {neighbor_id} depende de mim para origins: {child_origins}")
-
-            # 2. Encontrar o avô (meu pai no routing tree) para cada origin
-            recommended_target = None
-
-            for origin in child_origins:
-                best = self.get_best_route(origin)
-                if not best:
-                    print(f"[LEAVE] Sem best route para origin {origin}")
-                    continue
-
-                parent_id = best["sender"]
-
-                # Se o meu pai sou eu próprio, não existe "avô"
-                if parent_id == self.node_id:
-                    print(f"[LEAVE] Para origin {origin}, eu sou root. Não há avô para recomendar.")
-                    continue
-
-                info = self.overlay_mapping[parent_id]
-                recommended_target = {
-                    "id": parent_id,
-                    "ip": info["host"],
-                    "port": info["port"]
-                }
-
-                print(f"[LEAVE] Recomendando ao filho {neighbor_id} ligar ao avô {parent_id} "
-                    f"({info['host']}:{info['port']})")
-                break
-
-            # 3. Construir mensagem LEAVE
-            msg = LeaveMessage(
-                node_id=self.node_id,
-                recommended=recommended_target
-            )
-
-            # 4. Enviar a mensagem ao neighbor
-            try:
-                TCPTransport.send(
-                    self.neighbors[neighbor_id]["socket"],
-                    msg.to_json().encode()
-                )
-                if recommended_target:
-                    print(f"[LEAVE] LEAVE enviado a {neighbor_id} com recomendação.")
-                else:
-                    print(f"[LEAVE] LEAVE enviado a {neighbor_id} (simples).")
-            except Exception as e:
-                print(f"[LEAVE] Erro ao enviar LEAVE para {neighbor_id}: {e}")
-
-        # 5. Finalmente, fechar servidor e parar o loop principal
-        print("[LEAVE] Removendo nó da overlay e fechando conexões.")
-        self.running = False
-
-        # Remover as próprias referências
-        self.neighbors.clear()
-        self.forwarding_table.clear()
-        self.routing_table.clear()
-
-        print("[LEAVE] Finalizado.")
 
 
     def update_route(self, route_entry):
@@ -569,121 +556,7 @@ class Node:
                 self.sock_to_id[sock] = sender_id
 
 
-            elif isinstance(msg_obj, LeaveMessage):
-                sender_id = msg_obj.node_id
-                rec = msg_obj.recommended
-
-                print(f"[{self.node_id}] Recebi LEAVE de {sender_id} (recomendação: {rec})")
-
-                 # with self.lock:
-                #     affected_origins = [
-                #         route["origin"]
-                #         for route in self.routing_table
-                #         if route["sender"] == sender_id
-                #     ]
-                #     print(f"[LEAVE] {sender_id} era responsável pelos origins: {affected_origins}")
-
-                # with self.lock:
-                #     # Fechar socket do sender
-                #     if sender_id in self.neighbors:
-                #         try:
-                #             self.neighbors[sender_id]["socket"].close()
-                #         except:
-                #             pass
-                #         del self.neighbors[sender_id]
-                #         print(f"[LEAVE] Removido {sender_id} dos neighbors")
-
-                #     # Limpar rotas do sender
-                #     before = len(self.routing_table)
-                #     self.routing_table = [r for r in self.routing_table if r["sender"] != sender_id]
-                #     after = len(self.routing_table)
-                #     if before != after:
-                #         print(f"[LEAVE] Removidas {before - after} rotas que dependiam de {sender_id}")
-
-                #     # Remover sender da forwarding_table
-                #     for origin, deps in list(self.forwarding_table.items()):
-                #         if sender_id in deps:
-                #             deps.remove(sender_id)
-                #             print(f"[LEAVE] Removido {sender_id} de forwarding_table[{origin}]")
-
-                affected_origins = set()
-
-                with self.lock:
-                    # Ver quais rotas usavam este vizinho como Next Hop
-                    # Nota: na vossa routing table, 'sender' é o vizinho que nos deu a rota (o nosso pai)
-                    for route in self.routing_table:
-                        if route["sender"] == sender_id:
-                            affected_origins.add(route["origin"])
-
-                    # 2. Limpar o vizinho e as rotas dele
-                    if sender_id in self.neighbors:
-                        try:
-                            self.neighbors[sender_id]["socket"].close()
-                        except: pass
-                        del self.neighbors[sender_id]
-                    
-                    # Remover rotas vindas deste vizinho
-                    self.routing_table = [r for r in self.routing_table if r["sender"] != sender_id]
-                    
-                    # Limpar forwarding table (se ele era meu dependente)
-                    for origin, deps in self.forwarding_table.items():
-                        if sender_id in deps:
-                            deps.remove(sender_id)
-
-                # 3. Tentar recuperar CADA origem afetada
-                for origin in affected_origins:
-                    # Verificar se sobrou alguma rota na tabela
-                    best = self.get_best_route(origin)
-                    
-                    if best:
-                        # CENÁRIO INTELIGENTE: Temos uma rota alternativa (ex: via E)
-                        new_parent = best["sender"]
-                        print(f"[RECOVERY] Rota alternativa encontrada para {origin} via {new_parent}. Ativando...")
-                        
-                        # Enviar ACTIVATE para o novo pai
-                        if new_parent in self.neighbors:
-                            try:
-                                TCPTransport.send(
-                                    self.neighbors[new_parent]["socket"], 
-                                    ActivateMessage(origin, self.node_id).to_json().encode()
-                                )
-                            except Exception as e:
-                                print(f"[RECOVERY] Falha ao ativar rota alternativa: {e}")
-
-                    
-                    
-                    elif rec:
-                        rec_id = rec.get("id")
-                        rec_ip = rec.get("ip")
-                        rec_port = rec.get("port")
-
-                        for origin in affected_origins:
-                            # Verifica se há rotas alternativas para este origin
-                            alt = self.get_best_route(origin)
-                            if alt:
-                                with self.lock:
-                                    self.forwarding_table[origin] = [alt["sender"]]
-                                print(f"[LEAVE] Usando rota alternativa para origin {origin} via {alt['sender']}")
-                                continue
-
-                            # Sem rota alternativa → conectar ao recomendado diretamente (IP/Port do LEAVE)
-                            peer_sock = self.tcp_transport.connect(rec_ip, rec_port)
-                            if peer_sock:
-                                with self.lock:
-                                    self.neighbors[rec_id] = {
-                                        "ip": rec_ip,
-                                        "port": rec_port,
-                                        "socket": peer_sock,
-                                        "established": False
-                                    }
-                                    self.sock_to_id[peer_sock] = rec_id
-                                    self.forwarding_table.setdefault(origin, set()).add(rec_id)
-
-                                TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
-                                print(f"[LEAVE] Conectado ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
-                            else:
-                                print(f"[LEAVE] Falha ao conectar ao recomendado {rec_id} para origin {origin} ({rec_ip}:{rec_port})")
-
+            
             elif isinstance(msg_obj, FloodMessage):
                 origin = msg_obj.origin
                 sender = msg_obj.sender
@@ -770,6 +643,8 @@ class Node:
 
                         for neighbor_id, n_info in self.neighbors.items():
                             if neighbor_id != sender:
+                                if not n_info.get("established", False):
+                                    continue
                                 try:
                                     TCPTransport.send(
                                         n_info["socket"],

@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, LeaveMessage, FloodMessage, ActivateMessage, HeartBeatActiveMessage, ClientStreamRequest
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, FloodMessage, ActivateMessage, HeartBeatActiveMessage, ClientStreamRequest
 
 def parse_message(json_str: str) -> Message:
     """
@@ -19,10 +19,7 @@ def parse_message(json_str: str) -> Message:
     
     elif msg_type == "HELLOBACK":
         return HelloBackMessage(node_id=data["node_id"])
-    
-    elif msg_type == "LEAVE":
-        return LeaveMessage(node_id=data["node_id"], recommended=data["recommended"])
-    
+
     elif msg_type == "FLOOD":
         return FloodMessage(
             origin=data["origin"], sender=data["sender"], grandparent = data["grandparent"], 
