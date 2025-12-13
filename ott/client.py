@@ -33,10 +33,10 @@ class VideoClientGUI:
             pass
 
 class ClientApp:
-    def __init__(self, overlay_node_ip, overlay_node_port, stream_id=None):
+    def __init__(self, overlay_node_ip, overlay_node_port, ip):
         self.overlay_ip = overlay_node_ip
         self.overlay_port = overlay_node_port
-        self.stream_id = stream_id  # Pode ser None
+        self.my_ip = ip
         
         self.tk_root = Tk()
         self.gui = VideoClientGUI(self.tk_root)
@@ -83,14 +83,12 @@ class ClientApp:
     def send_stream_request(self):
         """Envia o pedido CLIENT_REQ via TCP"""
         try:
-            req = ClientStreamRequest(self.stream_id)
+            req = ClientStreamRequest(self.my_ip)
             # Usa o método estático do TCPTransport para garantir o formato correto (length-prefixed)
             TCPTransport.send(self.tcp_sock, req.to_json().encode())
             
-            if self.stream_id:
-                print(f"[TCP] Pedido enviado para stream '{self.stream_id}'")
-            else:
-                print(f"[TCP] Pedido enviado para QUALQUER stream disponível")
+            print(f"[TCP] Pedido enviado para QUALQUER stream disponível")
+        
         except Exception as e:
             print(f"[TCP] Erro ao enviar pedido: {e}")
             # Tentar reconectar se o socket tiver morrido
@@ -138,9 +136,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OTT Client")
     parser.add_argument("--node", required=True, help="IP do nodo overlay a conectar")
     parser.add_argument("--port", type=int, default=5000, help="Porta TCP do nodo overlay")
-    parser.add_argument("--stream", help="ID da stream (Opcional. Se vazio, pede a primeira disponível)", default=None)
+    parser.add_argument("--host", required=True, help="IP do cliente")
     
     args = parser.parse_args()
     
-    app = ClientApp(args.node, args.port, args.stream)
+    app = ClientApp(args.node, args.port, args.host)
     app.start()

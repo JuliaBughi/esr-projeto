@@ -119,5 +119,5 @@ class HeartBeatActiveMessage(Message):
 class ClientStreamRequest(Message):
     TYPE = "CLIENT_REQ"
     
-    def __init__(self, stream_id: str):
-        self.stream_id = stream_id
+    def __init__(self, client_id: str):
+        self.client_id = client_id

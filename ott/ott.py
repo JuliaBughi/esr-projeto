@@ -78,7 +78,7 @@ class Node:
         self.udp_transport.start_listening() 
         time.sleep(0.5)
         self.bootstrap()
-        print(f"[Node] {self.node_id} rodando. Ctrl+C para sair.")
+        print(f"[{self.node_id}] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
 
 
@@ -305,9 +305,9 @@ class Node:
                         n_info["socket"],
                         FloodMessage(origin=self.node_id, sender=self.node_id, grandparent = None, jumps=start_jump, loss=0.0, bandwidth=math.inf, latency=0.0).to_json().encode()
                     )
-                    print(f"[NODE] Enviei FLOOD para {neighbor_id}")
+                    print(f"[{self.node_id}] Enviei FLOOD para {neighbor_id}")
                 except Exception as e:
-                    print(f"[NODE] Falha ao enviar FLOOD para {neighbor_id}: {e}")
+                    print(f"[{self.node_id}] Falha ao enviar FLOOD para {neighbor_id}: {e}")
             time.sleep(interval)
 
 
@@ -349,7 +349,7 @@ class Node:
         else:
             bandwidth_val = bandwidth
 
-        return latency + loss*10 - bandwidth_val/10
+        return (60*latency + 20*loss + 20*(1/bandwidth_val))/100
 
 
     def start_rtp_stream(self, origin_id):
@@ -500,7 +500,7 @@ class Node:
                 self.ready_after_welcome = True
 
                 if len(msg_obj.neighbors) == 1 and self.my_role != "server":
-                    print(f"[Node] Sou folha após o WELCOME — posso entrar em perigo quando HELLO estabelecer.")
+                    print(f"[{self.node_id}] Sou folha após o WELCOME — posso entrar em perigo quando HELLO estabelecer.")
                     self.pending_danger = True
 
 
@@ -508,7 +508,7 @@ class Node:
                 sender_id = msg_obj.node_id
                 sender_ip = msg_obj.ip
                 sender_port = msg_obj.port
-                print(f"[Node] Recebi HELLO de {sender_id}")
+                print(f"[{self.node_id}] Recebi HELLO de {sender_id}")
 
                 if sender_id == self.node_id:
                     return  
@@ -544,7 +544,7 @@ class Node:
                 sender_id = msg_obj.node_id
                 sender_ip = msg_obj.ip
                 sender_port = msg_obj.port
-                print(f"[Node] Recebi HELLOBACK de {sender_id}")
+                print(f"[{self.node_id}] Recebi HELLOBACK de {sender_id}")
 
                 with self.lock:
                     self.neighbors[sender_id] = {
@@ -620,19 +620,18 @@ class Node:
                     "timestamp": now
                 }
                 self.update_route(route_entry)
-                print(f"[Node] Atualizei tabela para {origin} via {sender} (metric={new_metric})")
+                print(f"[{self.node_id}] Atualizei tabela do servidor {origin} via {sender} (metric={new_metric})")
 
 
                 best = self.get_best_route(origin)
                 # Se a rota recém-chegada é a melhor, reenvia Flood
                 if best["sender"] == sender:  
                     best["state"] = "ACTIVE" 
-                    print(f"[Node] Melhor rota para {origin} via {sender} (metric={new_metric})")
+                    print(f"[{self.node_id}] Melhor rota para servidor {origin} via {sender} (metric={new_metric})")
 
                     for r in self.routing_table:
                         if r["origin"] == origin and r["sender"] != best["sender"]:
                             r["state"] = "INACTIVE"
-
 
                     # Reenvia para vizinhos, exceto quem enviou
                     with self.lock:
@@ -658,12 +657,12 @@ class Node:
                                         FloodMessage(origin=origin, sender=self.node_id,grandparent = recommended_target, jumps=jumps, loss=loss, bandwidth=bandwidth, latency=latency).to_json().encode()
                                     )
                                 except Exception as e:
-                                    print(f"[NODE] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
+                                    print(f"[{self.node_id}] Falha ao reenviar FLOOD para {neighbor_id}: {e}")
 
                     # Se for client, dispara activate na melhor rota
                     with self.lock:
                         if self.pending_any_stream_clients:
-                            print(f"[NODE] Tenho clientes à espera e recebi rota para {origin}. Ativando...")
+                            print(f"[{self.node_id}] Tenho clientes à espera e recebi rota para {origin}. Ativando...")
                             
                             # 1. Adicionar clientes à lista deste stream
                             if origin not in self.external_clients:
@@ -681,18 +680,18 @@ class Node:
                                         sender_sock,
                                         ActivateMessage(origin=origin, client_id=self.node_id).to_json().encode()
                                     )
-                                    print(f"[NODE] Auto-Activate enviado para {sender}")
+                                    print(f"[{self.node_id}] Auto-Activate enviado para {sender}")
                                     
                                     # Marcar rota como ativa localmente
                                     best["state"] = "ACTIVE"
                             except Exception as e:
-                                print(f"[NODE] Erro no Auto-Activate: {e}")
+                                print(f"[{self.node_id}] Erro no Auto-Activate: {e}")
 
             elif isinstance(msg_obj, ActivateMessage):
                 origin = msg_obj.origin
                 client_id = msg_obj.client_id
                 
-                print(f"[{self.node_id}] Recebi ACTIVATE para origin={origin}, cliente={client_id}")
+                print(f"[{self.node_id}] Recebi ACTIVATE para servidor origin={origin}, cliente={client_id}")
 
                 prev_hop = self.sock_to_id.get(sock)
                 if prev_hop:
@@ -705,7 +704,6 @@ class Node:
                     return
 
                 if self.node_id == origin: 
-                    print(f"    -> [AVISO] Sou o origin ({self.node_id}). Não reencaminho ACTIVATE.")
                     return
                 
                 best_route = self.get_best_route(origin)
@@ -756,71 +754,48 @@ class Node:
                 return
 
             elif isinstance(msg_obj, ClientStreamRequest):
-                stream_id = msg_obj.stream_id
-                client_ip, _ = sock.getpeername()
+                client_ip = msg_obj.client_id
                 
-                if stream_id is None:
-                    print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu QUALQUER stream.")
+                print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu QUALQUER stream.")
+                
+                # 1. Verificar se já temos alguma rota ativa na tabela
+                # Vamos tentar encontrar a melhor rota disponível de todas
+                best_route_found = None
+                
+                # Procura na routing table a primeira rota válida
+                # (Poderíamos melhorar para escolher a com menor métrica de todas, mas a primeira serve)
+                if self.routing_table:
+                    # Ordena por métrica para dar a melhor rede disponível
+                    sorted_routes = sorted(self.routing_table, key=lambda x: x['metric'])
+                    best_route_found = sorted_routes[0] # Pega na melhor
+                
+                if best_route_found:
+                    stream_id = best_route_found["origin"]
+                    print(f"[CLIENT-REQ] Atribuindo stream '{stream_id}' ao cliente {client_ip}")
                     
-                    # 1. Verificar se já temos alguma rota ativa na tabela
-                    # Vamos tentar encontrar a melhor rota disponível de todas
-                    best_route_found = None
-                    
-                    # Procura na routing table a primeira rota válida
-                    # (Poderíamos melhorar para escolher a com menor métrica de todas, mas a primeira serve)
-                    if self.routing_table:
-                        # Ordena por métrica para dar a melhor rede disponível
-                        sorted_routes = sorted(self.routing_table, key=lambda x: x['metric'])
-                        best_route_found = sorted_routes[0] # Pega na melhor
-                    
-                    if best_route_found:
-                        stream_id = best_route_found["origin"]
-                        print(f"[CLIENT-REQ] Atribuindo stream '{stream_id}' ao cliente {client_ip}")
-                        
-                        # Adicionar aos clientes externos desse stream
-                        with self.lock:
-                            self.external_clients.setdefault(stream_id, set()).add(client_ip)
-                        
-                        # Envia ACTIVATE para cima
-                        parent = best_route_found["sender"] # ou 'antecessor' na vossa estrutura antiga, verifiquem chaves
-                        if parent in self.neighbors:
-                            try:
-                                TCPTransport.send(
-                                    self.neighbors[parent]["socket"], 
-                                    ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
-                                )
-                                print(f"[CLIENT-REQ] Enviado ACTIVATE para {parent} (Stream: {stream_id})")
-                            except Exception as e:
-                                print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
-                    else:
-                        # Se não há rotas, guarda o cliente para depois
-                        print(f"[CLIENT-REQ] Nenhuma rota disponível ainda. Cliente {client_ip} em espera.")
-                        with self.lock:
-                            self.pending_any_stream_clients.add(client_ip)
-
-                else:
-                    # LÓGICA ANTIGA (PEDIDO ESPECÍFICO)
-                    print(f"[CLIENT-REQ] Cliente externo {client_ip} pediu stream {stream_id}")
+                    # Adicionar aos clientes externos desse stream
                     with self.lock:
                         self.external_clients.setdefault(stream_id, set()).add(client_ip)
-
-                    best = self.get_best_route(stream_id)
-                    if best:
-                        parent = best["sender"]
-                        if parent in self.neighbors:
-                            print(f"[CLIENT-REQ] Enviando ACTIVATE para {parent}")
-                            try:
-                                TCPTransport.send(
-                                    self.neighbors[parent]["socket"], 
-                                    ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
-                                )
-                            except Exception as e:
-                                print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
-                    else:
-                        print(f"[CLIENT-REQ] Erro: Não tenho rota para {stream_id}")
-                
+                    
+                    # Envia ACTIVATE para cima
+                    parent = best_route_found["sender"] # ou 'antecessor' na vossa estrutura antiga, verifiquem chaves
+                    if parent in self.neighbors:
+                        try:
+                            TCPTransport.send(
+                                self.neighbors[parent]["socket"], 
+                                ActivateMessage(origin=stream_id, client_id=self.node_id).to_json().encode()
+                            )
+                            print(f"[CLIENT-REQ] Enviado ACTIVATE para {parent} (Stream: {stream_id})")
+                        except Exception as e:
+                            print(f"[CLIENT-REQ] Erro ao ativar rota: {e}")
+                else:
+                    # Se não há rotas, guarda o cliente para depois
+                    print(f"[CLIENT-REQ] Nenhuma rota disponível ainda. Cliente {client_ip} em espera.")
+                    with self.lock:
+                        self.pending_any_stream_clients.add(client_ip)
+               
         except Exception as e:
-            print(f"[Node] Erro ao processar mensagem: {e}")
+            print(f"[{self.node_id}] Erro ao processar mensagem: {e}")
             import traceback
             traceback.print_exc()
 

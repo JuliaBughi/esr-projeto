@@ -45,7 +45,7 @@ def parse_message(json_str: str) -> Message:
         )
 
     elif msg_type == "CLIENT_REQ":
-        return ClientStreamRequest(stream_id=data["stream_id"])
+        return ClientStreamRequest(client_id=data["client_id"])
     
     else:
         # Mensagem desconhecida
