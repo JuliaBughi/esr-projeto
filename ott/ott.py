@@ -421,37 +421,54 @@ class Node:
 
         
     def handle_stream_data(self, data: bytes, sender_addr: tuple):
-            try:
-                # Esta parte do 'if self.my_role == client' já não é usada se usares o client.py separado, 
-                # mas podes manter ou apagar. O importante é o que vem abaixo.
+        try:
+            sender_ip = sender_addr[0]
+            origin = None
 
-                all_dependents_overlay = set()
-                all_clients_external = set()
+            with self.lock:
+                # Descobrir a que origin pertence este RTP
+                for route in self.routing_table:
+                    if route["state"] != "ACTIVE":
+                        continue
 
-                with self.lock:
-                    # 1. Recolher dependentes da overlay (vizinhos)
-                    for origin in self.forwarding_table:
-                        all_dependents_overlay.update(self.forwarding_table[origin])
-                    
-                    # 2. Recolher clientes externos (AGORA NUM LOOP SEPARADO)
-                    # Isto garante que mesmo que não haja vizinhos overlay, servimos os clientes.
-                    for origin in self.external_clients:
-                        all_clients_external.update(self.external_clients[origin])
+                    sender_id = route["sender"]
+                    if sender_id in self.neighbors:
+                        if self.neighbors[sender_id]["ip"] == sender_ip:
+                            origin = route["origin"]
+                            break
 
-                # Reencaminhar para vizinhos da Overlay
-                for dependent_id in all_dependents_overlay:
-                    if dependent_id in self.neighbors:
-                        n_info = self.neighbors[dependent_id]
-                        self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, data)
+            if origin is None:
+                # RTP vindo de alguém que não é parent ativo → ignora
+                return
 
-                # Reencaminhar para Clientes Externos
-                for client_ip in all_clients_external:
-                    # Envia para a porta 5001 (MY_OTHER_PORT) do cliente
-                    self.udp_transport.send(client_ip, MY_OTHER_PORT, data)
-                    
-            except Exception as e:
-                # print(f"[{self.node_id}] Error in handle_stream_data: {e}")
-                pass
+            with self.lock:
+                # Dependentes overlay APENAS desse origin
+                dependents = set(self.forwarding_table.get(origin, set()))
+
+                # Clientes externos APENAS desse origin
+                external_clients = set(self.external_clients.get(origin, set()))
+
+            # Reencaminhar para overlay
+            for dependent_id in dependents:
+                if dependent_id in self.neighbors:
+                    n_info = self.neighbors[dependent_id]
+                    self.udp_transport.send(
+                        n_info["ip"],
+                        MY_OTHER_PORT,
+                        data
+                    )
+
+            # Reencaminhar para clientes externos
+            for client_ip in external_clients:
+                self.udp_transport.send(
+                    client_ip,
+                    MY_OTHER_PORT,
+                    data
+                )
+
+        except Exception as e:
+            print(f"[{self.node_id}] Erro no handle_stream_data: {e}")
+
 
 
     def get_grandparent(self):
