@@ -43,8 +43,11 @@ class WelcomeMessage(Message):
 class HelloMessage(Message):
     TYPE = "HELLO"
 
-    def __init__(self, node_id: str):
+    def __init__(self, node_id, ip, port):
+        self.type = "HELLO"
         self.node_id = node_id
+        self.ip = ip
+        self.port = port
         
 # ----------------------------
 # Mensagem HELLOBACK (aceitação de conexão com outro nó)
@@ -52,11 +55,11 @@ class HelloMessage(Message):
 class HelloBackMessage(Message):
     TYPE = "HELLOBACK"
 
-    def __init__(self, node_id: str):
+    def __init__(self, node_id, ip, port):
+        self.type = "HELLOBACK"
         self.node_id = node_id
-
-# JOIN, HELLO E HELLOBACK são iguais, vale a pena diferenciar? ver mais para frente se é preciso mais alguma coisa, se não dá para usar só hello
-
+        self.ip = ip
+        self.port = port
 
 # ----------------------------
 # Mensagem FLOOD (inundação do overlay)

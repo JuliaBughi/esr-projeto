@@ -15,10 +15,10 @@ def parse_message(json_str: str) -> Message:
         return WelcomeMessage(node_id=data["node_id"], neighbors=data["neighbors"])
     
     elif msg_type == "HELLO":
-        return HelloMessage(node_id=data["node_id"])
+        return HelloMessage(node_id=data["node_id"], ip=data["ip"], port=data["port"])
     
     elif msg_type == "HELLOBACK":
-        return HelloBackMessage(node_id=data["node_id"])
+        return HelloBackMessage(node_id=data["node_id"], ip=data["ip"], port=data["port"])
 
     elif msg_type == "FLOOD":
         return FloodMessage(

@@ -250,7 +250,7 @@ class Node:
                         self.sock_to_id[gp_sock] = gp
                         self.forwarding_table.setdefault(origin, set()).add(gp)
 
-                    TCPTransport.send(gp_sock, HelloMessage(self.node_id).to_json().encode())
+                    TCPTransport.send(gp_sock, HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode())
                 else:
                     print(f"[FAILURE] Não consegui ligar ao grandparent {gp}")
 
@@ -282,7 +282,7 @@ class Node:
 
                 TCPTransport.send(
                     sock,
-                    HelloMessage(self.node_id).to_json().encode()
+                    HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode()
                 )
 
                 print(f"[{self.node_id}] Reconexão iniciada com {other_id}")
@@ -496,7 +496,7 @@ class Node:
                     if peer_sock:
                         self.neighbors[n_id] = {"ip": n["host"], "port": n["port"], "socket": peer_sock, "established": False}
                         self.sock_to_id[peer_sock] = n_id
-                        TCPTransport.send(peer_sock, HelloMessage(self.node_id).to_json().encode())
+                        TCPTransport.send(peer_sock, HelloMessage(self.node_id, self.my_ip, MY_PORT ).to_json().encode())
                 self.ready_after_welcome = True
 
                 if len(msg_obj.neighbors) == 1 and self.my_role != "server":
@@ -506,55 +506,62 @@ class Node:
 
             elif isinstance(msg_obj, HelloMessage):
                 sender_id = msg_obj.node_id
+                sender_ip = msg_obj.ip
+                sender_port = msg_obj.port
                 print(f"[Node] Recebi HELLO de {sender_id}")
 
-                # Se ainda não temos a conexão com esse nó, registramos
-                if sender_id not in self.neighbors:
-                    host = None
-                    port = None
+                if sender_id == self.node_id:
+                    return  
 
-                    # Se estiver no overlay mapping, usamos info de lá
-                    if sender_id in self.overlay_mapping:
-                        host = self.overlay_mapping[sender_id]["host"]
-                        port = self.overlay_mapping[sender_id].get("port", MY_PORT)
-
-                    # Se não estiver, usamos o socket diretamente (IP/PORT remoto)
-                    else:
-                        host, port = sock.getpeername()  # pega IP/PORT do socket TCP
-
+                with self.lock:
                     self.neighbors[sender_id] = {
-                        "ip": host,
-                        "port": port,
+                        "ip": sender_ip,
+                        "port": sender_port,
                         "socket": sock,
                         "established": True
                     }
-                    print(f"[Node] Registrado novo vizinho {sender_id} via socket")
 
-                # Mapear socket para node_id
-                self.sock_to_id[sock] = sender_id
+                    self.overlay_mapping[sender_id] = {
+                        "host": sender_ip,
+                        "port": sender_port
+                    }
 
-                TCPTransport.send(sock, HelloBackMessage(self.node_id).to_json().encode())
+                    self.last_seen[sender_id] = time.time()
+
+                    self.sock_to_id[sock] = sender_id
+
+                TCPTransport.send(
+                    sock,
+                    HelloBackMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode()
+                )
 
                 if self.ready_after_welcome and self.pending_danger:
-                    print(f"[Node] Handshake com {sender_id} concluído e sou folha — enviando catastrophic_warning()")
                     self.pending_danger = False
                     self.catastrophic_warning()
 
 
             elif isinstance(msg_obj, HelloBackMessage):
                 sender_id = msg_obj.node_id
+                sender_ip = msg_obj.ip
+                sender_port = msg_obj.port
                 print(f"[Node] Recebi HELLOBACK de {sender_id}")
 
-                # Marca conexão como estabelecida ou cria entrada se não existir
-                if sender_id not in self.neighbors:
-                    host, port = sock.getpeername()
-                    self.neighbors[sender_id] = {"ip": host, "port": port, "socket": sock, "established": True}
-                    print(f"[Node] Registrado novo vizinho HELLOBACK {sender_id}")
-                else:
-                    self.neighbors[sender_id]["established"] = True
+                with self.lock:
+                    self.neighbors[sender_id] = {
+                        "ip": sender_ip,
+                        "port": sender_port,
+                        "socket": sock,
+                        "established": True
+                    }
 
-                self.sock_to_id[sock] = sender_id
+                    self.overlay_mapping[sender_id] = {
+                        "host": sender_ip,
+                        "port": sender_port
+                    }
 
+                    self.last_seen[sender_id] = time.time()
+
+                    self.sock_to_id[sock] = sender_id
 
             
             elif isinstance(msg_obj, FloodMessage):
