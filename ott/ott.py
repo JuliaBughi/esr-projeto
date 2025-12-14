@@ -287,8 +287,6 @@ class Node:
             host = info["host"]
             port = info["port"]
 
-            print(f"[{self.node_id}] A tentar reconectar a {other_id} ({host}:{port})...")
-
             sock = self.tcp_transport.connect(host, port)
             if sock:
                 with self.lock:
@@ -300,10 +298,7 @@ class Node:
                     }
                     self.sock_to_id[sock] = other_id
 
-                TCPTransport.send(
-                    sock,
-                    HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode()
-                )
+                TCPTransport.send(sock, HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode())
 
                 print(f"[{self.node_id}] Reconexão iniciada com {other_id}")
                 return

@@ -698,6 +698,58 @@ link l31 {
     bandwidth 0
 }
 
+annotation a1 {
+    iconcoords {913.0 152.0 1000.0 241.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize {12}
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
+annotation a2 {
+    iconcoords {19.0 496.0 117.0 585.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize {12}
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
+annotation a3 {
+    iconcoords {752.0 274.0 846.0 367.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize {12}
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
+annotation a4 {
+    iconcoords {662.0 158.0 760.0 246.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize {12}
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
 canvas c1 {
     name {Canvas1}
 }
