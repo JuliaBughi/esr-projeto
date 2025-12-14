@@ -81,7 +81,6 @@ class Node:
         print(f"[{self.node_id}] {self.node_id} rodando. Ctrl+C para sair.")
         time.sleep(1)
 
-
         threading.Thread(target=self.start_active_hb_sender_loop, daemon=True).start()
         threading.Thread(target=self.start_maintenance_loop, daemon=True).start()
         
@@ -105,6 +104,7 @@ class Node:
         TCPTransport.send(sock, JoinMessage(physical_id).to_json().encode())
         self.sock_to_id[sock] = None
         time.sleep(0.5)
+
 
     def start_active_hb_sender_loop(self):
         while True:
@@ -222,6 +222,27 @@ class Node:
 
                     continue
 
+                if self.safe_option:
+                    n_info = self.overlay_mapping[self.safe_option]
+                    safe_ip = n_info.get("host")
+                    safe_port = n_info.get("port")
+
+                    sock = self.tcp_transport.connect(safe_ip, safe_port)
+                    if sock:
+                        with self.lock:
+                            self.neighbors[self.safe_option] = {
+                                "ip": safe_ip,
+                                "port": safe_port,
+                                "socket": sock,
+                                "established": False
+                            }
+                            self.sock_to_id[sock] = self.safe_option
+                            self.forwarding_table.setdefault(origin, set()).add(self.safe_option)
+
+                        TCPTransport.send(sock, HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode())
+                    continue
+
+
                 gp = self.grandparent_of.get(origin)
 
                 if not gp:
@@ -290,7 +311,6 @@ class Node:
 
         print(f"[{self.node_id}] Falha na reconexão: nenhum nó disponível.")
 
-
             
     def periodic_flood(self, interval=10):
         while True:
@@ -344,7 +364,7 @@ class Node:
 
 
     def compute_metric(self, latency, loss, bandwidth):
-        if math.isinf(bandwidth):  # evita -inf
+        if math.isinf(bandwidth):  
             bandwidth_val = 1000  # assume alta largura de banda se ainda neutra
         else:
             bandwidth_val = bandwidth
@@ -365,7 +385,6 @@ class Node:
             print(f"[ERRO] A pasta '{streams_dir}' não existe na raiz do projeto.")
             return
 
-        # Lista apenas ficheiros .Mjpeg
         valid_files = [f for f in os.listdir(streams_dir) if f.endswith(".Mjpeg") or f.endswith(".mjpeg")]
         
         if not valid_files:
@@ -418,7 +437,6 @@ class Node:
             import traceback
             traceback.print_exc()
 
-
         
     def handle_stream_data(self, data: bytes, sender_addr: tuple):
         try:
@@ -452,11 +470,7 @@ class Node:
             for dependent_id in dependents:
                 if dependent_id in self.neighbors:
                     n_info = self.neighbors[dependent_id]
-                    self.udp_transport.send(
-                        n_info["ip"],
-                        MY_OTHER_PORT,
-                        data
-                    )
+                    self.udp_transport.send(n_info["ip"], MY_OTHER_PORT,data)
 
             # Reencaminhar para clientes externos
             for client_ip in external_clients:
@@ -470,31 +484,12 @@ class Node:
             print(f"[{self.node_id}] Erro no handle_stream_data: {e}")
 
 
-
-    def get_grandparent(self):
-        for origin in self.forwarding_table:
-            best = self.get_best_route(origin)
-            if best:
-                parent = best["sender"]
-                if parent != self.node_id:
-                    return parent
-        return None
-
-
     def catastrophic_warning(self):
         print(f"[{self.node_id}] Estou em perigo! A avisar o meu vizinho principal...")
 
-        for origin, dependents in self.forwarding_table.items():
-            best = self.get_best_route(origin)
-            if best and best["sender"] in self.neighbors:
-                parent = best["sender"]
-                TCPTransport.send(
-                    self.neighbors[parent]["socket"],
-                    DangerMessage(self.node_id).to_json().encode()
-                )
-                return
-
-        print("Não encontrei antecessor para avisar!")
+        parent = next(iter(self.neighbors.keys()))     
+        TCPTransport.send(self.neighbors[parent]["socket"], DangerMessage(self.node_id).to_json().encode())
+        self.pending_danger = False
 
 
     def handle_message(self, sock, data):
@@ -513,7 +508,7 @@ class Node:
                     if peer_sock:
                         self.neighbors[n_id] = {"ip": n["host"], "port": n["port"], "socket": peer_sock, "established": False}
                         self.sock_to_id[peer_sock] = n_id
-                        TCPTransport.send(peer_sock, HelloMessage(self.node_id, self.my_ip, MY_PORT ).to_json().encode())
+                        TCPTransport.send(peer_sock, HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode())
                 self.ready_after_welcome = True
 
                 if len(msg_obj.neighbors) == 1 and self.my_role != "server":
@@ -547,13 +542,9 @@ class Node:
 
                     self.sock_to_id[sock] = sender_id
 
-                TCPTransport.send(
-                    sock,
-                    HelloBackMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode()
-                )
+                TCPTransport.send(sock, HelloBackMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode())
 
                 if self.ready_after_welcome and self.pending_danger:
-                    self.pending_danger = False
                     self.catastrophic_warning()
 
 
@@ -579,6 +570,9 @@ class Node:
                     self.last_seen[sender_id] = time.time()
 
                     self.sock_to_id[sock] = sender_id
+
+                if self.ready_after_welcome and self.pending_danger:
+                    self.catastrophic_warning()
 
             
             elif isinstance(msg_obj, FloodMessage):
@@ -704,6 +698,7 @@ class Node:
                             except Exception as e:
                                 print(f"[{self.node_id}] Erro no Auto-Activate: {e}")
 
+
             elif isinstance(msg_obj, ActivateMessage):
                 origin = msg_obj.origin
                 client_id = msg_obj.client_id
@@ -741,13 +736,18 @@ class Node:
                 with self.lock:
                     # Já tenho outros ameaçados?
                     if not self.danger:
-                        # Lista vazia → enviar avô
-                        safe = self.get_grandparent()
+                        # Lista vazia → responsável pela reconexão ao avô
+                        safe = None
+                        safe_ip = None
+                        safe_port = None
                         self.danger.append(danger_node)
                         print(f"[{self.node_id}] danger vazio → safe_option para {danger_node} é {safe}")
                     else:
                         # Lista cheia → enviar o último!
                         safe = self.danger[-1]
+                        safe_info = self.overlay_mapping[safe]
+                        safe_ip = safe_info.get("host")
+                        safe_port = safe_info.get("port")
                         self.danger.append(danger_node)
                         print(f"[{self.node_id}] danger já tem elementos → safe_option para {danger_node} é {safe}")
 
@@ -755,15 +755,25 @@ class Node:
                 try:
                     TCPTransport.send(
                         self.neighbors[danger_node]["socket"],
-                        SafeOptionMessage(self.node_id, safe).to_json().encode()
+                        SafeOptionMessage(self.node_id, safe, safe_ip, safe_port).to_json().encode()
                     )
                 except:
-                    print(f"[{self.node_id}] Falha ao enviar safe_option para {danger_node}")
+                    print(f"[{self.node_id}] Falha ao enviar opção segura para {danger_node}")
 
 
             elif isinstance(msg_obj, SafeOptionMessage):
                 self.safe_option = msg_obj.safe
-                print(f"[{self.node_id}] safe_option atualizado: agora devo reconectar a {self.safe_option} se houver falha.")
+                ip = msg_obj.safe_ip
+                port = msg_obj.safe_port
+
+                if self.safe_option:
+                    with self.lock:
+                        self.overlay_mapping[self.safe_option] = {
+                            "host": ip,
+                            "port": port
+                        }
+                    print(f"[{self.node_id}] Opção segura atualizada: devo reconectar a {self.safe_option} se houver falha.")
+
         
             elif isinstance(msg_obj, HeartBeatActiveMessage):
                 sender_id = msg_obj.node_id

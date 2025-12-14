@@ -102,9 +102,11 @@ class DangerMessage(Message):
 class SafeOptionMessage(Message):
     TYPE = "SAFEOPTION"
     
-    def __init__(self, node_id: str, safe: str):
+    def __init__(self, node_id: str, safe: str, safe_ip: str, safe_port: str):
         self.node_id = node_id
         self.safe = safe
+        self.safe_ip = safe_ip
+        self.safe_port = safe_port
   
 # ----------------------------
 # Mensagem HEARTBEAT (monitorar)

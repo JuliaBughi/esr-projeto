@@ -1,5 +1,5 @@
 import json
-from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, FloodMessage, ActivateMessage, HeartBeatActiveMessage, ClientStreamRequest
+from .message_types import Message, JoinMessage, WelcomeMessage, HelloMessage, HelloBackMessage, FloodMessage, ActivateMessage, DangerMessage, SafeOptionMessage, HeartBeatActiveMessage, ClientStreamRequest
 
 def parse_message(json_str: str) -> Message:
     """
@@ -33,20 +33,13 @@ def parse_message(json_str: str) -> Message:
         return DangerMessage(node_id=data["node_id"])
 
     elif msg_type == "SAFEOPTION":
-        return SafeOptionMessage(
-            node_id=data["node_id"],
-            safe=data["safe"]
-        )
+        return SafeOptionMessage(node_id=data["node_id"], safe=data["safe"], safe_ip=data["safe_ip"], safe_port=data["safe_port"])
 
     elif msg_type == "HB_ACTIVE":
-        return HeartBeatActiveMessage(
-            node_id=data["node_id"],
-            timestamp=data["timestamp"]
-        )
+        return HeartBeatActiveMessage(node_id=data["node_id"], timestamp=data["timestamp"])
 
     elif msg_type == "CLIENT_REQ":
         return ClientStreamRequest(client_id=data["client_id"])
     
     else:
-        # Mensagem desconhecida
         return Message()
