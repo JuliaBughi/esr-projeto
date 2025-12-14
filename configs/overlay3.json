@@ -3,7 +3,6 @@
     "S1": {"host": "10.0.0.10", "neighbors": ["O4"]},
     "O4": {"host": "10.0.0.1", "neighbors": ["S1", "O3", "O2"]},
     "O3": {"host": "10.0.1.2", "neighbors": ["O2", "O4", "C1"]},
-    "O2": {"host": "10.0.2.2", "neighbors": ["O4", "O3"]},
-    "C1": {"host": "10.0.4.20", "neighbors": ["O3"]}
+    "O2": {"host": "10.0.2.2", "neighbors": ["O4", "O3"]}
   }
 }

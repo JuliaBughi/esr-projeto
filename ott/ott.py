@@ -242,7 +242,6 @@ class Node:
                         TCPTransport.send(sock, HelloMessage(self.node_id, self.my_ip, MY_PORT).to_json().encode())
                     continue
 
-
                 gp = self.grandparent_of.get(origin)
 
                 if not gp:
