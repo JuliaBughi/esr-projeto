@@ -369,13 +369,26 @@ class Node:
 
 
     def compute_metric(self, latency, loss, bandwidth):
-        if math.isinf(bandwidth):  
-            bandwidth_val = 1000  # assume alta largura de banda se ainda neutra
+        # --- Normalização ---
+        # Latência: 0..200 ms
+        L_norm = min(latency / 200.0, 1.0)
+
+        # Packet loss: 0..100 %
+        P_norm = min(loss / 100.0, 1.0)
+
+        # Bandwidth: >=100 Mbps é ótimo
+        if bandwidth <= 0 or math.isinf(bandwidth):
+            B_norm = 1.0
         else:
-            bandwidth_val = bandwidth
+            B_norm = 1.0 - min(bandwidth / 100.0, 1.0)
 
-        return (60*latency + 20*loss + 20*(1/bandwidth_val))/100
+        # --- Pesos ---
+        wL = 0.5
+        wP = 0.3
+        wB = 0.2
 
+        metric = wL * L_norm + wP * P_norm + wB * B_norm
+        return metric
 
     def start_rtp_stream(self, origin_id):
         if self.my_role != "server" or self.node_id != origin_id:
@@ -623,7 +636,11 @@ class Node:
                 # Combina cumulativamente
                 latency = prev_latency + link_latency
                 loss = prev_loss + link_loss
-                bandwidth = min(prev_bandwidth, link_bandwidth) if prev_bandwidth else link_bandwidth
+                if math.isinf(prev_bandwidth):
+                    bandwidth = link_bandwidth
+                else:
+                    bandwidth = min(prev_bandwidth, link_bandwidth)
+
 
                 now = time.time()
                 new_metric = self.compute_metric(latency, loss, bandwidth)
