@@ -2,7 +2,7 @@ node n1 {
     type router
     model router
     network-config {
-	hostname n1
+	hostname O6
 	!
 	interface eth3
 	 ip address 10.0.20.1/24
@@ -34,7 +34,7 @@ node n2 {
     type router
     model router
     network-config {
-	hostname n2
+	hostname O5
 	!
 	interface eth3
 	 ip address 10.0.6.1/24
@@ -189,7 +189,7 @@ node n7 {
     type router
     model router
     network-config {
-	hostname n7
+	hostname O7
 	!
 	interface eth4
 	 ip address 10.0.19.1/24
@@ -253,7 +253,7 @@ node n9 {
     type router
     model router
     network-config {
-	hostname n9
+	hostname O3
 	!
 	interface eth2
 	 ip address 10.0.11.1/24
@@ -280,7 +280,7 @@ node n10 {
     type router
     model router
     network-config {
-	hostname n10
+	hostname O2
 	!
 	interface eth2
 	 ip address 10.0.18.1/24
@@ -377,7 +377,7 @@ node n16 {
     type router
     model host
     network-config {
-	hostname Server2
+	hostname S1
 	!
 	interface eth0
 	 ip address 10.0.18.10/24
@@ -394,7 +394,7 @@ node n17 {
     type router
     model PC
     network-config {
-	hostname n17
+	hostname C5
 	!
 	interface eth0
 	 ip address 10.0.6.20/24
@@ -411,7 +411,7 @@ node n18 {
     type router
     model PC
     network-config {
-	hostname n18
+	hostname C4
 	!
 	interface eth0
 	 ip address 10.0.6.21/24
@@ -428,7 +428,7 @@ node n19 {
     type router
     model PC
     network-config {
-	hostname n19
+	hostname C3
 	!
 	interface eth0
 	 ip address 10.0.20.20/24
@@ -462,7 +462,7 @@ node n22 {
     type router
     model PC
     network-config {
-	hostname n22
+	hostname C2
 	!
 	interface eth0
 	 ip address 10.0.19.21/24
@@ -479,7 +479,7 @@ node n23 {
     type router
     model PC
     network-config {
-	hostname n23
+	hostname C1
 	!
 	interface eth0
 	 ip address 10.0.5.21/24
@@ -513,7 +513,7 @@ node n25 {
     type router
     model PC
     network-config {
-	hostname n25
+	hostname bootstrapper
 	!
 	interface eth0
 	 ip address 10.0.18.20/24
@@ -530,7 +530,7 @@ node n20 {
     type router
     model host
     network-config {
-	hostname Server1
+	hostname S2
 	!
 	interface eth0
 	 ip address 10.0.20.10/24
@@ -747,6 +747,129 @@ annotation a4 {
     color #CFCFFF
     width 0
     border black
+    canvas c1
+}
+
+annotation a5 {
+    iconcoords {219.0 160.0 300.0 236.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
+annotation a6 {
+    iconcoords {121.0 285.0 205.0 361.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
+annotation a7 {
+    iconcoords {455.0 423.0 541.0 505.0}
+    type oval
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #CFCFFF
+    width 0
+    border black
+    canvas c1
+}
+
+annotation a8 {
+    iconcoords {864.0 382.0 973.0 440.0}
+    type rectangle
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #ffc0ff
+    width 0
+    border black
+    rad 22
+    canvas c1
+}
+
+annotation a9 {
+    iconcoords {542.0 25.0 640.0 89.0}
+    type rectangle
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #c0ffff
+    width 0
+    border black
+    rad 24
+    canvas c1
+}
+
+annotation a10 {
+    iconcoords {563.0 565.0 651.0 626.0}
+    type rectangle
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #c0ffff
+    width 0
+    border black
+    rad 23
+    canvas c1
+}
+
+annotation a11 {
+    iconcoords {13.0 109.0 61.0 193.0}
+    type rectangle
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #c0ffff
+    width 0
+    border black
+    rad 18
+    canvas c1
+}
+
+annotation a12 {
+    iconcoords {71.0 24.0 154.0 73.0}
+    type rectangle
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #c0ffff
+    width 0
+    border black
+    rad 19
+    canvas c1
+}
+
+annotation a13 {
+    iconcoords {9.0 387.0 60.0 467.0}
+    type rectangle
+    label {}
+    labelcolor black
+    fontfamily {Arial}
+    fontsize 12
+    color #c0ffff
+    width 0
+    border black
+    rad 19
     canvas c1
 }
 
