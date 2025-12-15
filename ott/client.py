@@ -116,7 +116,7 @@ class ClientApp:
                 self.send_stream_request()
                 
                 # Espera um pouco antes de tentar de novo para não fazer spam
-                time.sleep(3)
+                time.sleep(10)
             else:
                 time.sleep(1)
 

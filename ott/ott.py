@@ -132,7 +132,7 @@ class Node:
 
 
     def start_maintenance_loop(self):
-        timeout_limit = 5
+        timeout_limit = 10
 
         while True:
             time.sleep(2)
@@ -317,7 +317,7 @@ class Node:
         print(f"[{self.node_id}] Falha na reconexão: nenhum nó disponível.")
 
             
-    def periodic_flood(self, interval=8):
+    def periodic_flood(self, interval=5):
         while True:
             start_jump = 0
             with self.lock:
@@ -810,7 +810,7 @@ class Node:
                         self.external_clients.setdefault(stream_id, set()).add(client_ip)
                     
                     # Envia ACTIVATE para cima
-                    parent = best_route_found["sender"] # ou 'antecessor' na vossa estrutura antiga, verifiquem chaves
+                    parent = best_route_found["sender"] 
                     if parent in self.neighbors:
                         try:
                             TCPTransport.send(
