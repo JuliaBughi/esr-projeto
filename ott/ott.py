@@ -132,7 +132,7 @@ class Node:
 
 
     def start_maintenance_loop(self):
-        timeout_limit = 5
+        timeout_limit = 10
 
         while True:
             time.sleep(2)
@@ -204,7 +204,18 @@ class Node:
             # Para cada origin verificar alternativas
             for origin in affected_origins:
 
-                best = self.get_best_route(origin)
+                best = None
+                for route in self.routing_table:
+                    if route["origin"] != origin:
+                        continue
+
+                    candidate = route["sender"]
+
+                    if candidate in self.forwarding_table.get(origin, set()):
+                        continue
+
+                    if not best or route["metric"] < best["metric"]:
+                        best = route
 
                 if best:
                     # rota alternativa existe → basta ativar
