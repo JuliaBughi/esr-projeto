@@ -132,19 +132,19 @@ class Node:
 
 
     def start_maintenance_loop(self):
-        timeout_limit = 10
+        timeout_limit = 5
 
         while True:
             time.sleep(2)
             now = time.time()
 
-            # === TIMEOUT DE HEARTBEAT ===  
+            # timeout dos hb 
             for node_id, last in list(self.last_seen.items()):
                 if now - last > timeout_limit:
                     print(f"[FAILURE] Vizinho {node_id} está inativo (timeout).")
                     self.handle_neighbor_failure(node_id)
 
-            # === DETETAR ISOLAMENTO TOTAL ===
+            # ver se esta isolado
             with self.lock:
                 neighbors_copy = dict(self.neighbors)
 
