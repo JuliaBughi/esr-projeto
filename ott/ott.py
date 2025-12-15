@@ -317,7 +317,7 @@ class Node:
         print(f"[{self.node_id}] Falha na reconexão: nenhum nó disponível.")
 
             
-    def periodic_flood(self, interval=10):
+    def periodic_flood(self, interval=8):
         while True:
             start_jump = 0
             with self.lock:
@@ -435,7 +435,7 @@ class Node:
                             self.udp_transport.send(n_info["ip"], MY_OTHER_PORT, packet_bytes)
 
                 # Controla a taxa de frames (20 fps = 0.05s)
-                time.sleep(0.05)
+                time.sleep(0.03)
             
         except Exception as e:
             print(f"[ERRO] Falha no streaming RTP: {e}")
