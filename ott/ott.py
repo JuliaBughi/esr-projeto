@@ -132,7 +132,7 @@ class Node:
 
 
     def start_maintenance_loop(self):
-        timeout_limit = 10
+        timeout_limit = 5
 
         while True:
             time.sleep(2)
